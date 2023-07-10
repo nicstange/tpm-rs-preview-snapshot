@@ -4,6 +4,8 @@ use crate::interface;
 use crate::utils;
 use core::convert;
 
+pub mod chained;
+
 #[derive(Debug)]
 pub enum RngGenerateError {
     ReseedRequired,
