@@ -5,6 +5,7 @@ use crate::utils;
 use core::convert;
 
 pub mod chained;
+pub mod hash_drbg;
 
 #[derive(Debug)]
 pub enum RngGenerateError {
