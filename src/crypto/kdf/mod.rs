@@ -5,6 +5,8 @@ use crate::utils::{self, cfg_zeroize};
 use alloc::vec::Vec;
 use cfg_zeroize::Zeroize as _;
 
+pub mod tcg_tpm2_kdf_a;
+
 pub trait Kdf {
     fn max_output_len(&self) -> Option<usize>;
 
