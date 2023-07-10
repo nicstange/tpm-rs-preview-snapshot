@@ -4,7 +4,10 @@ version = "0.1.0"
 edition = "2021"
 
 [features]
-default = ["enable_arch_math_asm", "zeroize"]
+default = [
+    "enable_arch_math_asm", "zeroize",
+    "sha1", "sha256", "sha384", "sha512", "sha3_256", "sha3_384", "sha3_512", "sm3_256"
+]
 
 # Use CPU instructions for basic arithmetic directly.
 # Gives a significant performance gain at the cost of (fairly trivial)
@@ -18,6 +21,30 @@ use_allocator_api = []
 # Enable zeroization of sensitive memory contents when no longer needed.
 zeroize = ["dep:zeroize", "cmpa/zeroize"]
 
+# Hashes
+sha1 = ["dep:sha1"]
+sha256 = ["dep:sha2"]
+sha384 = ["dep:sha2"]
+sha512 = ["dep:sha2"]
+sha3_256 = ["dep:sha3"]
+sha3_384 = ["dep:sha3"]
+sha3_512 = ["dep:sha3"]
+sm3_256 = ["dep:sm3"]
+
 [dependencies]
 cmpa = { git = "https://gitlab.suse.de/nstange/rust-cmpa.git", branch = "master", default-features = false }
 zeroize = { version = "1.6.0", optional = true, default-features = false, features = ["alloc"] }
+
+crypto-common = { version = "0.1.6", default-features = false}
+
+digest = { version = "0.10.6", default-features = false, features = ["subtle"] }
+hmac = { version = "0.12.1", default-features = false }
+
+sha1 = { version = "0.10.5", optional = true, default-features = false }
+sha2 = { version = "0.10.6", optional = true, default-features = false }
+sha3 = { version = "0.10.8", optional = true, default-features = false }
+sm3 = { version = "0.4.1", optional = true, default-features = false }
+
+# Needed by the "hmac" dependency, include it here to enable the
+# "core_hint_black_box" feature.
+subtle = { version = "2.5.0", default-features = false, features = ["core_hint_black_box"] }

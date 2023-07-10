@@ -287,6 +287,29 @@ fn marshal_i64<'a>(buf: &mut [u8], value: i64) -> &mut [u8] {
     buf
 }
 
+// TCG Algorithm Registry, page 11, table 3, TPM_ALG_ID constants
+#[cfg(any(feature = "sha1", feature = "sha256", feature = "sha384", feature = "sha3_256", feature = "sha3_384", feature = "sha3_512", feature = "sha512", feature = "sm3_256"))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u16)]
+enum TpmAlgId {
+    #[cfg(feature = "sha1")]
+    Sha1 = 0x4u16,
+    #[cfg(feature = "sha256")]
+    Sha256 = 0xbu16,
+    #[cfg(feature = "sha384")]
+    Sha384 = 0xcu16,
+    #[cfg(feature = "sha512")]
+    Sha512 = 0xdu16,
+    #[cfg(feature = "sm3_256")]
+    Sm3_256 = 0x12u16,
+    #[cfg(feature = "sha3_256")]
+    Sha3_256 = 0x27u16,
+    #[cfg(feature = "sha3_384")]
+    Sha3_384 = 0x28u16,
+    #[cfg(feature = "sha3_512")]
+    Sha3_512 = 0x29u16,
+}
+
 // TCG TPM2 Library, Part 2 -- Structures, page 54, table 16, TPM_RC constants
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TpmRc {
@@ -432,4 +455,78 @@ impl TpmHt {
     pub const TRANSIENT: u8 = 0x80u8;
     pub const PERSISTENT: u8 = 0x81u8;
     pub const AC: u8 = 0x90u8;
+}
+
+// TCG TPM2 Library, Part 2 -- Structures, page 107, table 65, TPMI_ALG_HASH type (without conditional values)
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u16)]
+pub enum TpmiAlgHash {
+    #[cfg(feature = "sha1")]
+    Sha1 = TpmAlgId::Sha1 as u16,
+    #[cfg(feature = "sha256")]
+    Sha256 = TpmAlgId::Sha256 as u16,
+    #[cfg(feature = "sha384")]
+    Sha384 = TpmAlgId::Sha384 as u16,
+    #[cfg(feature = "sha512")]
+    Sha512 = TpmAlgId::Sha512 as u16,
+    #[cfg(feature = "sm3_256")]
+    Sm3_256 = TpmAlgId::Sm3_256 as u16,
+    #[cfg(feature = "sha3_256")]
+    Sha3_256 = TpmAlgId::Sha3_256 as u16,
+    #[cfg(feature = "sha3_384")]
+    Sha3_384 = TpmAlgId::Sha3_384 as u16,
+    #[cfg(feature = "sha3_512")]
+    Sha3_512 = TpmAlgId::Sha3_512 as u16,
+}
+
+impl convert::TryFrom<u16> for TpmiAlgHash {
+    type Error = TpmErr;
+
+    fn try_from(value: u16) -> Result<Self, TpmErr> {
+        let result = match value {
+            #[cfg(feature = "sha1")]
+            value if value == Self::Sha1 as u16 => Self::Sha1,
+            #[cfg(feature = "sha256")]
+            value if value == Self::Sha256 as u16 => Self::Sha256,
+            #[cfg(feature = "sha384")]
+            value if value == Self::Sha384 as u16 => Self::Sha384,
+            #[cfg(feature = "sha512")]
+            value if value == Self::Sha512 as u16 => Self::Sha512,
+            #[cfg(feature = "sm3_256")]
+            value if value == Self::Sm3_256 as u16 => Self::Sm3_256,
+            #[cfg(feature = "sha3_256")]
+            value if value == Self::Sha3_256 as u16 => Self::Sha3_256,
+            #[cfg(feature = "sha3_384")]
+            value if value == Self::Sha3_384 as u16 => Self::Sha3_384,
+            #[cfg(feature = "sha3_512")]
+            value if value == Self::Sha3_512 as u16 => Self::Sha3_512,
+            _ => {
+                return Err(TpmErr::Rc(TpmRc::HASH));
+            },
+        };
+
+        Ok(result)
+    }
+}
+
+// TCG TPM2 Library, Part 2 -- Structures, page 112, table 79, TPMT_HA structure (without conditional values)
+#[derive(Debug, PartialEq)]
+#[repr(C, u16)]
+pub enum TpmtHa<'a> {
+    #[cfg(feature = "sha1")]
+    Sha1(TpmBuffer<'a>) = TpmAlgId::Sha1 as u16,
+    #[cfg(feature = "sha256")]
+    Sha256(TpmBuffer<'a>) = TpmAlgId::Sha256 as u16,
+    #[cfg(feature = "sha384")]
+    Sha384(TpmBuffer<'a>) = TpmAlgId::Sha384 as u16,
+    #[cfg(feature = "sha512")]
+    Sha512(TpmBuffer<'a>) = TpmAlgId::Sha512 as u16,
+    #[cfg(feature = "sm3_256")]
+    Sm3_256(TpmBuffer<'a>) = TpmAlgId::Sm3_256 as u16,
+    #[cfg(feature = "sha3_256")]
+    Sha3_256(TpmBuffer<'a>) = TpmAlgId::Sha3_256 as u16,
+    #[cfg(feature = "sha3_384")]
+    Sha3_384(TpmBuffer<'a>) = TpmAlgId::Sha3_384 as u16,
+    #[cfg(feature = "sha3_512")]
+    Sha3_512(TpmBuffer<'a>) = TpmAlgId::Sha3_512 as u16,
 }
