@@ -6,7 +6,8 @@ edition = "2021"
 [features]
 default = [
     "enable_arch_math_asm", "zeroize",
-    "sha1", "sha256", "sha384", "sha512", "sha3_256", "sha3_384", "sha3_512", "sm3_256"
+    "sha1", "sha256", "sha384", "sha512", "sha3_256", "sha3_384", "sha3_512", "sm3_256",
+    "rsa"
 ]
 
 # Use CPU instructions for basic arithmetic directly.
@@ -30,6 +31,9 @@ sha3_256 = ["dep:sha3"]
 sha3_384 = ["dep:sha3"]
 sha3_512 = ["dep:sha3"]
 sm3_256 = ["dep:sm3"]
+
+# RSA
+rsa = []
 
 [dependencies]
 cmpa = { git = "https://gitlab.suse.de/nstange/rust-cmpa.git", branch = "master", default-features = false }
