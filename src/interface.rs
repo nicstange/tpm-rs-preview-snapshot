@@ -415,3 +415,21 @@ impl TpmRc {
     pub const RC_F: u32 = 0xf00u32;
     pub const N_MASK: u32 = 0xf00u32;
 }
+
+// TCG TPM2 Library, Part 2 -- Structures, page 73, table 27, TPM_HT constants
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TpmHt {
+}
+
+impl TpmHt {
+    pub const PCR: u8 = 0x0u8;
+    pub const NV_INDEX: u8 = 0x1u8;
+    pub const HMAC_SESSION: u8 = 0x2u8;
+    pub const LOADED_SESSION: u8 = 0x2u8;
+    pub const POLICY_SESSION: u8 = 0x3u8;
+    pub const SAVED_SESSION: u8 = 0x3u8;
+    pub const PERMANENT: u8 = 0x40u8;
+    pub const TRANSIENT: u8 = 0x80u8;
+    pub const PERSISTENT: u8 = 0x81u8;
+    pub const AC: u8 = 0x90u8;
+}

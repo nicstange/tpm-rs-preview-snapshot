@@ -7,5 +7,7 @@ mod tpm_err_helpers;
 mod index_permutation;
 mod interface;
 mod leases;
+mod session;
+mod sessions;
 mod sync_types;
 mod utils;
