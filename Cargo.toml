@@ -4,14 +4,20 @@ version = "0.1.0"
 edition = "2021"
 
 [features]
-default = ["zeroize"]
+default = ["enable_arch_math_asm", "zeroize"]
+
+# Use CPU instructions for basic arithmetic directly.
+# Gives a significant performance gain at the cost of (fairly trivial)
+# inline assembly, necessarily wrapped in unsafe{} blocks.
+enable_arch_math_asm = ["cmpa/enable_arch_math_asm"]
 
 # Enable use of unstable library feature 'allocator_api', enables
 # graceful handling of memory allocation failures.
 use_allocator_api = []
 
 # Enable zeroization of sensitive memory contents when no longer needed.
-zeroize = ["dep:zeroize"]
+zeroize = ["dep:zeroize", "cmpa/zeroize"]
 
 [dependencies]
+cmpa = { git = "https://gitlab.suse.de/nstange/rust-cmpa.git", branch = "master", default-features = false }
 zeroize = { version = "1.6.0", optional = true, default-features = false, features = ["alloc"] }
