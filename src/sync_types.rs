@@ -1,5 +1,6 @@
 extern crate alloc;
 use super::interface;
+use super::utils;
 use alloc::sync::Arc;
 use core::ops::{Deref, DerefMut};
 use core::pin::Pin;
@@ -41,17 +42,8 @@ impl<ST: SyncTypes, T> PinArcLock<ST, T> {
         PinArcLockGuard::new(self.lock.clone())
     }
 
-    #[cfg(feature = "use_allocator_api")]
     pub fn try_new(value: T) -> Result<Self, interface::TpmErr> {
-        let p = Arc::try_new(ST::Lock::from(value)).map_err(|_| tpm_err_rc!(MEMORY))?;
-        Ok(Self {
-            lock: unsafe { Pin::new_unchecked(p) },
-        })
-    }
-
-    #[cfg(not(feature = "use_allocator_api"))]
-    pub fn try_new(value: T) -> Result<Self, interface::TpmErr> {
-        let p = Arc::new(ST::Lock::from(value));
+        let p = utils::arc_try_new(ST::Lock::from(value))?;
         Ok(Self {
             lock: unsafe { Pin::new_unchecked(p) },
         })
