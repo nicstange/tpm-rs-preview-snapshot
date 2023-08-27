@@ -1,5 +1,5 @@
 extern crate alloc;
-use crate::crypto::{io_slices, rng};
+use crate::crypto::{io_slices, rng, xor};
 use crate::interface;
 use crate::utils::{self, cfg_zeroize};
 use alloc::vec::Vec;
@@ -11,12 +11,19 @@ pub trait Kdf {
     fn max_output_len(&self) -> Option<usize>;
 
     fn generate(self, output: &mut io_slices::IoSlicesMut) -> Result<(), interface::TpmErr>;
+
+    fn generate_and_xor(self, output: &mut io_slices::IoSlicesMut) -> Result<(), interface::TpmErr>;
 }
 
 pub trait VariableChunkOutputKdf {
     fn max_remaining_len(&self) -> Option<usize>;
 
     fn generate_chunk(
+        &mut self,
+        output: &mut io_slices::IoSlicesMut,
+    ) -> Result<(), interface::TpmErr>;
+
+    fn generate_and_xor_chunk(
         &mut self,
         output: &mut io_slices::IoSlicesMut,
     ) -> Result<(), interface::TpmErr>;
@@ -29,6 +36,10 @@ impl<VK: VariableChunkOutputKdf> Kdf for VK {
 
     fn generate(mut self, output: &mut io_slices::IoSlicesMut) -> Result<(), interface::TpmErr> {
         self.generate_chunk(output)
+    }
+
+    fn generate_and_xor(mut self, output: &mut io_slices::IoSlicesMut) -> Result<(), interface::TpmErr> {
+        self.generate_and_xor_chunk(output)
     }
 }
 
@@ -90,6 +101,49 @@ pub trait FixedBlockOutputKdf: Sized {
 
         Ok(block_buf_remaining_len)
     }
+
+    fn generate_and_xor_chunk_impl(
+        &mut self,
+        output: &mut io_slices::IoSlicesMut,
+        block_buf: &mut [u8],
+        mut block_buf_remaining_len: usize,
+    ) -> Result<usize, interface::TpmErr> {
+        if let Some(max_remaining_len) = self.max_remaining_len() {
+            if output.len() > max_remaining_len + block_buf_remaining_len {
+                return Err(interface::TpmErr::InternalErr);
+            }
+        }
+
+        let block_len = self.block_len();
+        while !output.is_empty() {
+            let output0 = output.first().unwrap();
+            let output0_len = output0.len();
+            if block_buf_remaining_len != 0 {
+                let output0_len = output0_len.min(block_buf_remaining_len);
+                let block_buf_src_begin = block_len - block_buf_remaining_len;
+                let block_buf_src_end = block_buf_src_begin + output0_len;
+                let block_buf_src = &block_buf[block_buf_src_begin..block_buf_src_end];
+                xor::xor_bytes(&mut output0[..output0_len], block_buf_src);
+                block_buf_remaining_len -= output0_len;
+                output.advance(output0_len);
+            } else {
+                debug_assert_eq!(block_buf.len(), block_len);
+                let cur_block_len = self.generate_block(block_buf)?;
+                debug_assert!(cur_block_len == block_len || cur_block_len >= output.len());
+                if cur_block_len != block_len {
+                    // The buffered output will get consumed from the tail of the block_buf[]. Move
+                    // the result from generate_block() there.
+                    block_buf.copy_within(..cur_block_len, block_len - cur_block_len);
+                }
+                block_buf_remaining_len = cur_block_len;
+            }
+        }
+
+        // Wipe out the bytes consumed from the block_buf[].
+        block_buf[..block_len - block_buf_remaining_len].zeroize();
+
+        Ok(block_buf_remaining_len)
+    }
 }
 
 pub struct BufferedFixedBlockOutputKdf<BK: FixedBlockOutputKdf> {
@@ -122,6 +176,18 @@ impl<BK: FixedBlockOutputKdf> VariableChunkOutputKdf for BufferedFixedBlockOutpu
         output: &mut io_slices::IoSlicesMut,
     ) -> Result<(), interface::TpmErr> {
         self.block_buf_remaining_len = self.block_kdf.generate_chunk_impl(
+            output,
+            self.block_buf.as_mut_slice(),
+            self.block_buf_remaining_len,
+        )?;
+        Ok(())
+    }
+
+    fn generate_and_xor_chunk(
+        &mut self,
+        output: &mut io_slices::IoSlicesMut,
+    ) -> Result<(), interface::TpmErr> {
+        self.block_buf_remaining_len = self.block_kdf.generate_and_xor_chunk_impl(
             output,
             self.block_buf.as_mut_slice(),
             self.block_buf_remaining_len,

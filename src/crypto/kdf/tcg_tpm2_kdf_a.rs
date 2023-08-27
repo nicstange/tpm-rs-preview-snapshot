@@ -162,6 +162,17 @@ impl<'a> kdf::Kdf for TcgTpm2KdfA<'a> {
 
         Ok(())
     }
+
+    fn generate_and_xor(mut self, output: &mut io_slices::IoSlicesMut) -> Result<(), interface::TpmErr> {
+        if output.len() > self.remaining_output_len() {
+            return Err(interface::TpmErr::InternalErr);
+        }
+
+        let mut block_scratch_buf = utils::try_alloc_zeroizing_vec::<u8>(self.block_len)?;
+        self.generate_and_xor_chunk_impl(output, block_scratch_buf.as_mut_slice(), 0)?;
+
+        Ok(())
+    }
 }
 
 #[cfg(test)]
