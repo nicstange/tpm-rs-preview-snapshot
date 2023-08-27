@@ -10,6 +10,7 @@ use crate::utils::{self, cfg_zeroize};
 use cmpa::{
     self, MpMutNativeEndianUIntLimbsSlice, MpMutUInt as _, MpMutUIntSlice as _, MpUIntCommon as _,
 };
+use core::convert;
 
 /// Representation of a RSA private key suitable for decryption based on the
 /// Chinese Remainder Theorem (CRT).
@@ -597,6 +598,18 @@ impl cfg_zeroize::Zeroize for RsaPrivateKeyCrt {
 }
 
 impl cfg_zeroize::ZeroizeOnDrop for RsaPrivateKeyCrt {}
+
+impl convert::TryFrom<&RsaPrivateKeyCrt> for interface::Tpm2bPrivateKeyRsa<'static> {
+    type Error = interface::TpmErr;
+
+    fn try_from(value: &RsaPrivateKeyCrt) -> Result<Self, Self::Error> {
+        let mut p_buf = utils::try_alloc_zeroizing_vec(value.p_len)?;
+        let mut p = cmpa::MpMutBigEndianUIntByteSlice::from_bytes(&mut p_buf);
+        p.copy_from(&value.get_p());
+        #[allow(clippy::useless_conversion)]
+        Ok(interface::Tpm2bPrivateKeyRsa { buffer: interface::TpmBuffer::Owned(p_buf.into())})
+    }
+}
 
 // This is the modulus corresponding to the prime pair for the sha256 testcase
 // in keygen_impl.

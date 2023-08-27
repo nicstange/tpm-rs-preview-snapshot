@@ -530,3 +530,17 @@ pub enum TpmtHa<'a> {
     #[cfg(feature = "sha3_512")]
     Sha3_512(TpmBuffer<'a>) = TpmAlgId::Sha3_512 as u16,
 }
+
+// TCG TPM2 Library, Part 2 -- Structures, page 149, table 174, TPM2B_PUBLIC_KEY_RSA structure
+#[cfg(feature = "rsa")]
+#[derive(Debug, PartialEq)]
+pub struct Tpm2bPublicKeyRsa<'a> {
+    pub buffer: TpmBuffer<'a>,
+}
+
+// TCG TPM2 Library, Part 2 -- Structures, page 149, table 176, TPM2B_PRIVATE_KEY_RSA structure
+#[cfg(feature = "rsa")]
+#[derive(Debug, PartialEq)]
+pub struct Tpm2bPrivateKeyRsa<'a> {
+    pub buffer: TpmBuffer<'a>,
+}
