@@ -32,8 +32,12 @@ sha3_384 = ["dep:sha3"]
 sha3_512 = ["dep:sha3"]
 sm3_256 = ["dep:sm3"]
 
+# KDFs
+mgf1 = []
+
 # RSA
 rsa = []
+
 
 [dependencies]
 cmpa = { git = "https://gitlab.suse.de/nstange/rust-cmpa.git", branch = "master", default-features = false }

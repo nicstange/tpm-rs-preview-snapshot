@@ -5,6 +5,8 @@ use crate::utils::{self, cfg_zeroize};
 use alloc::vec::Vec;
 use cfg_zeroize::Zeroize as _;
 
+#[cfg(feature = "mgf1")]
+pub mod mgf1;
 pub mod tcg_tpm2_kdf_a;
 
 pub trait Kdf {
@@ -12,7 +14,8 @@ pub trait Kdf {
 
     fn generate(self, output: &mut io_slices::IoSlicesMut) -> Result<(), interface::TpmErr>;
 
-    fn generate_and_xor(self, output: &mut io_slices::IoSlicesMut) -> Result<(), interface::TpmErr>;
+    fn generate_and_xor(self, output: &mut io_slices::IoSlicesMut)
+        -> Result<(), interface::TpmErr>;
 }
 
 pub trait VariableChunkOutputKdf {
@@ -38,7 +41,10 @@ impl<VK: VariableChunkOutputKdf> Kdf for VK {
         self.generate_chunk(output)
     }
 
-    fn generate_and_xor(mut self, output: &mut io_slices::IoSlicesMut) -> Result<(), interface::TpmErr> {
+    fn generate_and_xor(
+        mut self,
+        output: &mut io_slices::IoSlicesMut,
+    ) -> Result<(), interface::TpmErr> {
         self.generate_and_xor_chunk(output)
     }
 }
