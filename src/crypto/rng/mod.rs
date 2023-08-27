@@ -75,3 +75,15 @@ pub trait ReseedableRngCore: RngCore + Sized {
         Ok(())
     }
 }
+
+#[cfg(test)]
+pub fn test_rng() -> hash_drbg::HashDrbg {
+    extern crate alloc;
+    use alloc::vec;
+    use super::hash;
+
+    let hash_alg = hash::test_hash_alg();
+    let min_entropy_len = hash_drbg::HashDrbg::min_seed_entropy_len(hash_alg);
+    let entropy = vec![0u8; min_entropy_len];
+    hash_drbg::HashDrbg::instantiate(hash_alg, &entropy, None, None).unwrap()
+}
