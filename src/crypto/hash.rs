@@ -633,3 +633,37 @@ impl HmacInstance {
         }
     }
 }
+
+#[cfg(test)]
+macro_rules! cfg_select_hash {
+    (($f:literal, $id:ident)) => {
+        #[cfg(feature = $f)]
+        return interface::TpmiAlgHash::$id;
+        #[cfg(not(feature = $f))]
+        {
+            "Force compile error for no hash configured"
+        }
+    };
+    (($f:literal, $id:ident), $(($f_more:literal, $id_more:ident)),+) => {
+        #[cfg(feature = $f)]
+        return interface::TpmiAlgHash::$id;
+        #[cfg(not(feature = $f))]
+        {
+            cfg_select_hash!($(($f_more, $id_more)),+)
+        }
+    };
+}
+
+#[cfg(test)]
+pub fn test_hash_alg() -> interface::TpmiAlgHash {
+    cfg_select_hash!(
+        ("sha512", Sha512),
+        ("sha256", Sha256),
+        ("sha3_512", Sha3_512),
+        ("sha3_256", Sha3_256),
+        ("sha384", Sha384),
+        ("sha3_384", Sha3_384),
+        ("sha1", Sha1),
+        ("sm3_256", Sm3_256)
+    );
+}
