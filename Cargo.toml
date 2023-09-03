@@ -7,7 +7,7 @@ edition = "2021"
 default = [
     "enable_arch_math_asm", "zeroize",
     "sha1", "sha256", "sha384", "sha512", "sha3_256", "sha3_384", "sha3_512", "sm3_256",
-    "rsa", "oaep", "rsapss"
+    "rsa", "oaep", "rsapss", "rsassa"
 ]
 
 # Use CPU instructions for basic arithmetic directly.
@@ -39,6 +39,7 @@ mgf1 = []
 rsa = []
 oaep = ["rsa", "mgf1"]
 rsapss = ["rsa", "mgf1"]
+rsassa = ["rsa"]
 
 [dependencies]
 cmpa = { git = "https://gitlab.suse.de/nstange/rust-cmpa.git", branch = "master", default-features = false }
