@@ -2,6 +2,8 @@
 
 mod crt_impl;
 mod encrypt_impl;
+#[cfg(feature = "rsaes")]
+pub mod es_pkcs1_v1_5;
 pub mod key;
 mod keygen_impl;
 #[cfg(feature = "oaep")]
