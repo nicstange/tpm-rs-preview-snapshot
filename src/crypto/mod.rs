@@ -1,4 +1,6 @@
 pub mod ct_cmp;
+#[cfg(feature = "ecc")]
+pub mod ecc;
 pub mod hash;
 pub mod io_slices;
 pub mod kdf;

@@ -310,6 +310,80 @@ enum TpmAlgId {
     Sha3_512 = 0x29u16,
 }
 
+// TCG Algorithm Registry, page 15, table 4, TPM_ECC_CURVE constants
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u16)]
+pub enum TpmEccCurve {
+    None = 0x0u16,
+    #[cfg(feature = "ecc_nist_p192")]
+    NistP192 = 0x1u16,
+    #[cfg(feature = "ecc_nist_p224")]
+    NistP224 = 0x2u16,
+    #[cfg(feature = "ecc_nist_p256")]
+    NistP256 = 0x3u16,
+    #[cfg(feature = "ecc_nist_p384")]
+    NistP384 = 0x4u16,
+    #[cfg(feature = "ecc_nist_p521")]
+    NistP521 = 0x5u16,
+    #[cfg(feature = "ecc_bn_p256")]
+    BnP256 = 0x10u16,
+    #[cfg(feature = "ecc_bn_p638")]
+    BnP638 = 0x11u16,
+    #[cfg(feature = "ecc_sm2_p256")]
+    Sm2P256 = 0x20u16,
+    #[cfg(feature = "ecc_bp_p256_r1")]
+    BpP256R1 = 0x30u16,
+    #[cfg(feature = "ecc_bp_p384_r1")]
+    BpP384R1 = 0x31u16,
+    #[cfg(feature = "ecc_bp_p512_r1")]
+    BpP512R1 = 0x32u16,
+    #[cfg(feature = "ecc_curve_25519")]
+    Curve25519 = 0x40u16,
+    #[cfg(feature = "ecc_curve_448")]
+    Curve448 = 0x41u16,
+}
+
+impl convert::TryFrom<u16> for TpmEccCurve {
+    type Error = TpmErr;
+
+    fn try_from(value: u16) -> Result<Self, TpmErr> {
+        let result = match value {
+            value if value == Self::None as u16 => Self::None,
+            #[cfg(feature = "ecc_nist_p192")]
+            value if value == Self::NistP192 as u16 => Self::NistP192,
+            #[cfg(feature = "ecc_nist_p224")]
+            value if value == Self::NistP224 as u16 => Self::NistP224,
+            #[cfg(feature = "ecc_nist_p256")]
+            value if value == Self::NistP256 as u16 => Self::NistP256,
+            #[cfg(feature = "ecc_nist_p384")]
+            value if value == Self::NistP384 as u16 => Self::NistP384,
+            #[cfg(feature = "ecc_nist_p521")]
+            value if value == Self::NistP521 as u16 => Self::NistP521,
+            #[cfg(feature = "ecc_bn_p256")]
+            value if value == Self::BnP256 as u16 => Self::BnP256,
+            #[cfg(feature = "ecc_bn_p638")]
+            value if value == Self::BnP638 as u16 => Self::BnP638,
+            #[cfg(feature = "ecc_sm2_p256")]
+            value if value == Self::Sm2P256 as u16 => Self::Sm2P256,
+            #[cfg(feature = "ecc_bp_p256_r1")]
+            value if value == Self::BpP256R1 as u16 => Self::BpP256R1,
+            #[cfg(feature = "ecc_bp_p384_r1")]
+            value if value == Self::BpP384R1 as u16 => Self::BpP384R1,
+            #[cfg(feature = "ecc_bp_p512_r1")]
+            value if value == Self::BpP512R1 as u16 => Self::BpP512R1,
+            #[cfg(feature = "ecc_curve_25519")]
+            value if value == Self::Curve25519 as u16 => Self::Curve25519,
+            #[cfg(feature = "ecc_curve_448")]
+            value if value == Self::Curve448 as u16 => Self::Curve448,
+            _ => {
+                return Err(TpmErr::Rc(TpmRc::CURVE));
+            },
+        };
+
+        Ok(result)
+    }
+}
+
 // TCG TPM2 Library, Part 2 -- Structures, page 54, table 16, TPM_RC constants
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TpmRc {
