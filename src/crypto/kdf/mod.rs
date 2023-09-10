@@ -8,6 +8,8 @@ use cfg_zeroize::Zeroize as _;
 #[cfg(feature = "mgf1")]
 pub mod mgf1;
 pub mod tcg_tpm2_kdf_a;
+#[cfg(feature = "ecdh")]
+pub mod tcg_tpm2_kdf_e;
 
 pub trait Kdf {
     fn max_output_len(&self) -> Option<usize>;
