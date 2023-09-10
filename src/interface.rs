@@ -618,3 +618,33 @@ pub struct Tpm2bPublicKeyRsa<'a> {
 pub struct Tpm2bPrivateKeyRsa<'a> {
     pub buffer: TpmBuffer<'a>,
 }
+
+// TCG TPM2 Library, Part 2 -- Structures, page 150, table 177, TPM2B_ECC_PARAMETER structure
+#[derive(Debug, PartialEq)]
+pub struct Tpm2bEccParameter<'a> {
+    pub buffer: TpmBuffer<'a>,
+}
+
+impl<'a> Tpm2bEccParameter<'a> {
+    pub fn stabilize(&mut self) -> Result<(), TpmErr> {
+        self.buffer.stabilize()?;
+        Ok(())
+    }
+}
+
+// TCG TPM2 Library, Part 2 -- Structures, page 150, table 178, TPMS_ECC_POINT structure
+#[cfg(feature = "ecc")]
+#[derive(Debug, PartialEq)]
+pub struct TpmsEccPoint<'a> {
+    pub x: Tpm2bEccParameter<'a>,
+    pub y: Tpm2bEccParameter<'a>,
+}
+
+#[cfg(feature = "ecc")]
+impl<'a> TpmsEccPoint<'a> {
+    pub fn stabilize(&mut self) -> Result<(), TpmErr> {
+        self.x.stabilize()?;
+        self.y.stabilize()?;
+        Ok(())
+    }
+}
