@@ -8,7 +8,7 @@ default = [
     "enable_arch_math_asm", "zeroize",
     "sha1", "sha256", "sha384", "sha512", "sha3_256", "sha3_384", "sha3_512", "sm3_256",
     "rsa", "oaep", "rsapss", "rsaes", "rsassa",
-    "ecc", "ecdh",
+    "ecc", "ecdh", "ecdsa",
     "ecc_nist_p192", "ecc_nist_p224", "ecc_nist_p256", "ecc_nist_p384", "ecc_nist_p521",
     "ecc_bn_p256", "ecc_bn_p638", "ecc_bp_p256_r1", "ecc_bp_p384_r1", "ecc_bp_p512_r1", "ecc_sm2_p256",
 ]
@@ -48,6 +48,7 @@ rsassa = ["rsa"]
 # ECC
 ecc = []
 ecdh = ["ecc"]
+ecdsa = ["ecc"]
 ecc_nist_p192 = ["ecc"]
 ecc_nist_p224 = ["ecc"]
 ecc_nist_p256 = ["ecc"]

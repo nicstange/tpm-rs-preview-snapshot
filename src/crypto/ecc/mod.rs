@@ -3,3 +3,5 @@ mod curve;
 pub mod ecdh;
 mod gen_random_scalar_impl;
 pub mod key;
+#[cfg(feature = "ecdsa")]
+pub mod ecdsa;
