@@ -288,12 +288,16 @@ fn marshal_i64<'a>(buf: &mut [u8], value: i64) -> &mut [u8] {
 }
 
 // TCG Algorithm Registry, page 11, table 3, TPM_ALG_ID constants
-#[cfg(any(feature = "sha1", feature = "sha256", feature = "sha384", feature = "sha3_256", feature = "sha3_384", feature = "sha3_512", feature = "sha512", feature = "sm3_256"))]
+#[cfg(any(feature = "aes", feature = "camellia", feature = "cbc", feature = "cfb", feature = "ctr", feature = "ecb", feature = "ofb", feature = "sha1", feature = "sha256", feature = "sha384", feature = "sha3_256", feature = "sha3_384", feature = "sha3_512", feature = "sha512", feature = "sm3_256", feature = "sm4", feature = "tdes"))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u16)]
 enum TpmAlgId {
+    #[cfg(feature = "tdes")]
+    Tdes = 0x3u16,
     #[cfg(feature = "sha1")]
     Sha1 = 0x4u16,
+    #[cfg(feature = "aes")]
+    Aes = 0x6u16,
     #[cfg(feature = "sha256")]
     Sha256 = 0xbu16,
     #[cfg(feature = "sha384")]
@@ -302,12 +306,26 @@ enum TpmAlgId {
     Sha512 = 0xdu16,
     #[cfg(feature = "sm3_256")]
     Sm3_256 = 0x12u16,
+    #[cfg(feature = "sm4")]
+    Sm4 = 0x13u16,
+    #[cfg(feature = "camellia")]
+    Camellia = 0x26u16,
     #[cfg(feature = "sha3_256")]
     Sha3_256 = 0x27u16,
     #[cfg(feature = "sha3_384")]
     Sha3_384 = 0x28u16,
     #[cfg(feature = "sha3_512")]
     Sha3_512 = 0x29u16,
+    #[cfg(feature = "ctr")]
+    Ctr = 0x40u16,
+    #[cfg(feature = "ofb")]
+    Ofb = 0x41u16,
+    #[cfg(feature = "cbc")]
+    Cbc = 0x42u16,
+    #[cfg(feature = "cfb")]
+    Cfb = 0x43u16,
+    #[cfg(feature = "ecb")]
+    Ecb = 0x44u16,
 }
 
 // TCG Algorithm Registry, page 15, table 4, TPM_ECC_CURVE constants
@@ -576,6 +594,82 @@ impl convert::TryFrom<u16> for TpmiAlgHash {
             value if value == Self::Sha3_512 as u16 => Self::Sha3_512,
             _ => {
                 return Err(TpmErr::Rc(TpmRc::HASH));
+            },
+        };
+
+        Ok(result)
+    }
+}
+
+// TCG TPM2 Library, Part 2 -- Structures, page 108, table 68, TPMI_ALG_SYM_OBJECT type (without conditional values)
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u16)]
+pub enum TpmiAlgSymObject {
+    #[cfg(feature = "tdes")]
+    Tdes = TpmAlgId::Tdes as u16,
+    #[cfg(feature = "aes")]
+    Aes = TpmAlgId::Aes as u16,
+    #[cfg(feature = "sm4")]
+    Sm4 = TpmAlgId::Sm4 as u16,
+    #[cfg(feature = "camellia")]
+    Camellia = TpmAlgId::Camellia as u16,
+}
+
+impl convert::TryFrom<u16> for TpmiAlgSymObject {
+    type Error = TpmErr;
+
+    fn try_from(value: u16) -> Result<Self, TpmErr> {
+        let result = match value {
+            #[cfg(feature = "tdes")]
+            value if value == Self::Tdes as u16 => Self::Tdes,
+            #[cfg(feature = "aes")]
+            value if value == Self::Aes as u16 => Self::Aes,
+            #[cfg(feature = "sm4")]
+            value if value == Self::Sm4 as u16 => Self::Sm4,
+            #[cfg(feature = "camellia")]
+            value if value == Self::Camellia as u16 => Self::Camellia,
+            _ => {
+                return Err(TpmErr::Rc(TpmRc::SYMMETRIC));
+            },
+        };
+
+        Ok(result)
+    }
+}
+
+// TCG TPM2 Library, Part 2 -- Structures, page 110, table 75, TPMI_ALG_CIPHER_MODE type (without conditional values)
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u16)]
+pub enum TpmiAlgCipherMode {
+    #[cfg(feature = "ctr")]
+    Ctr = TpmAlgId::Ctr as u16,
+    #[cfg(feature = "ofb")]
+    Ofb = TpmAlgId::Ofb as u16,
+    #[cfg(feature = "cbc")]
+    Cbc = TpmAlgId::Cbc as u16,
+    #[cfg(feature = "cfb")]
+    Cfb = TpmAlgId::Cfb as u16,
+    #[cfg(feature = "ecb")]
+    Ecb = TpmAlgId::Ecb as u16,
+}
+
+impl convert::TryFrom<u16> for TpmiAlgCipherMode {
+    type Error = TpmErr;
+
+    fn try_from(value: u16) -> Result<Self, TpmErr> {
+        let result = match value {
+            #[cfg(feature = "ctr")]
+            value if value == Self::Ctr as u16 => Self::Ctr,
+            #[cfg(feature = "ofb")]
+            value if value == Self::Ofb as u16 => Self::Ofb,
+            #[cfg(feature = "cbc")]
+            value if value == Self::Cbc as u16 => Self::Cbc,
+            #[cfg(feature = "cfb")]
+            value if value == Self::Cfb as u16 => Self::Cfb,
+            #[cfg(feature = "ecb")]
+            value if value == Self::Ecb as u16 => Self::Ecb,
+            _ => {
+                return Err(TpmErr::Rc(TpmRc::MODE));
             },
         };
 

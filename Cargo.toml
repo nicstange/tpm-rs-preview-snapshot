@@ -7,6 +7,8 @@ edition = "2021"
 default = [
     "enable_arch_math_asm", "zeroize",
     "sha1", "sha256", "sha384", "sha512", "sha3_256", "sha3_384", "sha3_512", "sm3_256",
+    "aes", "camellia", "sm4",
+    "cbc", "cfb", "ctr", "ecb", "ofb",
     "rsa", "oaep", "rsapss", "rsaes", "rsassa",
     "ecc", "ecdh", "ecdsa", "ecschnorr",
     "ecc_nist_p192", "ecc_nist_p224", "ecc_nist_p256", "ecc_nist_p384", "ecc_nist_p521",
@@ -22,8 +24,14 @@ enable_arch_math_asm = ["cmpa/enable_arch_math_asm"]
 # graceful handling of memory allocation failures.
 use_allocator_api = []
 
-# Enable zeroization of sensitive memory contents when no longer needed.
-zeroize = ["dep:zeroize", "cmpa/zeroize"]
+# Enable zeroization of sensitive memory contents when no longer
+# needed.
+
+zeroize = [
+	"dep:zeroize", "cmpa/zeroize", "cipher/zeroize",
+	"aes/zeroize", "camellia/zeroize", "sm4/zeroize",
+	"cfb-mode/zeroize", "cbc/zeroize", "ofb/zeroize"
+]
 
 # Hashes
 sha1 = ["dep:sha1"]
@@ -34,6 +42,18 @@ sha3_256 = ["dep:sha3"]
 sha3_384 = ["dep:sha3"]
 sha3_512 = ["dep:sha3"]
 sm3_256 = ["dep:sm3"]
+
+# Block ciphers
+aes = ["dep:aes"]
+camellia = ["dep:camellia"]
+sm4 = ["dep:sm4"]
+
+# Block cipher modes
+cbc = ["dep:cbc"]
+cfb = ["dep:cfb-mode"]
+ctr = []
+ecb = ["dep:ecb"]
+ofb = ["dep:ofb"]
 
 # KDFs
 mgf1 = []
@@ -75,6 +95,16 @@ sha1 = { version = "0.10.5", optional = true, default-features = false }
 sha2 = { version = "0.10.6", optional = true, default-features = false }
 sha3 = { version = "0.10.8", optional = true, default-features = false }
 sm3 = { version = "0.4.1", optional = true, default-features = false }
+
+aes = { version = "0.8.2", optional = true, default-features = false }
+camellia = { version = "0.1.0", optional = true, default-features = false }
+sm4 = { version = "0.5.1", optional = true, default-features = false }
+
+cipher = { version = "0.4.4", default-features = false }
+cbc = { version = "0.1.2", optional = true, default-features = false }
+cfb-mode = { version = "0.8.2", optional = true, default-features = false }
+ecb = { version = "0.1.2", optional = true, default-features = false }
+ofb = { version = "0.6.1", optional = true, default-features = false }
 
 # Needed by the "hmac" dependency, include it here to enable the
 # "core_hint_black_box" feature.

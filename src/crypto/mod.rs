@@ -7,4 +7,5 @@ pub mod kdf;
 pub mod rng;
 #[cfg(feature = "rsa")]
 pub mod rsa;
+pub mod symcipher;
 pub mod xor;
