@@ -4,8 +4,9 @@ use super::utils;
 use alloc::sync::Arc;
 use core::ops::{Deref, DerefMut};
 use core::pin::Pin;
+use core::marker;
 
-pub trait Lock<T>: From<T> {
+pub trait Lock<T>: marker::Send + marker::Sync + From<T> {
     type Guard<'a>: Deref<Target = T> + DerefMut
     where
         Self: 'a;
@@ -13,7 +14,7 @@ pub trait Lock<T>: From<T> {
     fn lock(&self) -> Self::Guard<'_>;
 }
 
-pub trait RwLock<T>: From<T> {
+pub trait RwLock<T>: marker::Send + marker::Sync + From<T> {
     type ReadGuard<'a>: Deref<Target = T>
     where
         Self: 'a;
