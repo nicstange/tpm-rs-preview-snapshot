@@ -1,3 +1,5 @@
+pub mod asynchronous;
+
 pub mod cfg_zeroize;
 mod try_new_helpers;
 
