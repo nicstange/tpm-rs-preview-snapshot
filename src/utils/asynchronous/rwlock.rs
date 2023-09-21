@@ -153,7 +153,7 @@ impl AsyncRwLockQueue {
     }
 }
 
-pub struct AsyncRwLock<ST: sync_types::SyncTypes, T: Sized> {
+pub struct AsyncRwLock<ST: sync_types::SyncTypes, T> {
     queue: ST::Lock<AsyncRwLockQueue>,
     data: cell::UnsafeCell<T>,
 }
