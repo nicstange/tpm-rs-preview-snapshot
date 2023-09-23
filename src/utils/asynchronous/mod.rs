@@ -2,3 +2,4 @@
 
 mod broadcast_future;
 mod rwlock;
+mod semaphore;
