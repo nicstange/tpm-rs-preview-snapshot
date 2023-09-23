@@ -93,10 +93,10 @@ where
                 }
 
                 *last_subscription_id += 1;
-                let id = *last_subscription_id;
+                let id = num::NonZeroU64::new(*last_subscription_id).unwrap();
                 subscriptions.push(BroadcastFutureSubscriptionEntry { waker: None, id });
                 Ok(BroadcastFutureSharedStateTrySubscribeResult::Pending {
-                    subscription_id: num::NonZeroU64::new(id).unwrap(),
+                    subscription_id: id,
                 })
             }
             Self::Ready(result) => Ok(BroadcastFutureSharedStateTrySubscribeResult::Ready(
@@ -226,7 +226,6 @@ where
         let this = utils::arc_try_new(Self {
             shared: ST::Lock::from(BroadcastFutureSharedState::new(inner)),
         })?;
-
         Ok(unsafe { pin::Pin::new_unchecked(this) })
     }
 
