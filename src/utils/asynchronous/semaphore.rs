@@ -10,7 +10,7 @@ use core::{future, marker, num, pin, task};
 /// Internal representation of a waiter enqueued to [`AsyncSemaphoreQueue`]
 struct AsyncSemaphoreQueueEntry {
     /// The number of leases to acquire.
-    leases_requested: u64,
+    leases_requested: usize,
     /// The waker to invoke once the requested number of leases becomes
     /// available.
     waker: Option<task::Waker>,
@@ -26,17 +26,17 @@ struct AsyncSemaphoreQueue {
 
     /// Number of active leases handed out. They must eventually get returned
     /// via [`return_granted_leases`](Self::return_granted_leases).
-    granted_leases: u64,
+    granted_leases: usize,
 
     /// Maximum number of leases that can be granted at a time.
-    max_leases: u64,
+    max_leases: usize,
 
     /// Last waiter id allocated in the course of enqueueing.
     last_waiter_id: u64,
 }
 
 impl AsyncSemaphoreQueue {
-    fn new(max_leases: u64) -> Self {
+    fn new(max_leases: usize) -> Self {
         Self {
             queue: collections::VecDeque::new(),
             granted_leases: 0,
@@ -63,7 +63,7 @@ impl AsyncSemaphoreQueue {
     }
 
     /// Cancel an enqueued waiter.
-    fn cancel_waiter(&mut self, waiter_id: num::NonZeroU64, leases_requested: u64) {
+    fn cancel_waiter(&mut self, waiter_id: num::NonZeroU64, leases_requested: usize) {
         match self
             .queue
             .iter()
@@ -92,7 +92,7 @@ impl AsyncSemaphoreQueue {
     ///
     /// Return granted leases back to the pool, making them available to
     /// other waiters again.
-    fn return_granted_leases(&mut self, leases: u64) {
+    fn return_granted_leases(&mut self, leases: usize) {
         if leases == 0 {
             return;
         }
@@ -133,7 +133,7 @@ impl AsyncSemaphoreQueue {
     ///   failure.
     fn try_enqueue(
         &mut self,
-        leases_requested: u64,
+        leases_requested: usize,
     ) -> Result<Option<num::NonZeroU64>, interface::TpmErr> {
         if leases_requested > self.max_leases {
             return Err(tpm_err_internal!());
@@ -175,7 +175,7 @@ impl<ST: sync_types::SyncTypes> AsyncSemaphore<ST> {
     ///
     /// * `max_leases` - Maximum number of total semaphore leases which can be
     ///   active at a time.
-    pub fn new(max_leases: u64) -> Result<pin::Pin<sync::Arc<Self>>, interface::TpmErr> {
+    pub fn new(max_leases: usize) -> Result<pin::Pin<sync::Arc<Self>>, interface::TpmErr> {
         let this = utils::arc_try_new(Self {
             queue: ST::Lock::from(AsyncSemaphoreQueue::new(max_leases)),
         })?;
@@ -183,7 +183,7 @@ impl<ST: sync_types::SyncTypes> AsyncSemaphore<ST> {
     }
 
     /// Maximum number of total semaphore leases which can be active at a time.
-    pub fn max_leases(&self) -> u64 {
+    pub fn max_leases(&self) -> usize {
         self.queue.lock().max_leases
     }
 
@@ -212,7 +212,7 @@ impl<ST: sync_types::SyncTypes> AsyncSemaphore<ST> {
     ///   allotted in total.
     pub fn acquire(
         self: pin::Pin<sync::Arc<Self>>,
-        leases_requested: u64,
+        leases_requested: usize,
     ) -> Result<AsyncSemaphoreWaitFuture<ST>, interface::TpmErr> {
         let mut queue = self.queue.lock();
         let waiter_id = queue.try_enqueue(leases_requested)?;
@@ -254,7 +254,7 @@ impl<ST: sync_types::SyncTypes> AsyncSemaphore<ST> {
     ///   allotted in total.
     pub fn try_acquire(
         self: pin::Pin<sync::Arc<Self>>,
-        leases_requested: u64,
+        leases_requested: usize,
     ) -> Result<Option<AsyncSemaphoreLeasesGuard<ST>>, interface::TpmErr> {
         let mut queue = self.queue.lock();
         if queue.max_leases < leases_requested {
@@ -316,13 +316,13 @@ enum AsyncSemaphoreWaitFuturePriv<ST: sync_types::SyncTypes> {
     Enqueued {
         sem: WeakAsyncSemaphoreRef<ST>,
         waiter_id: num::NonZeroU64,
-        leases_requested: u64,
+        leases_requested: usize,
     },
     /// The requested number of semaphore leases had been available at
     /// enqueueing time and they got granted right away.
     LeasesGranted {
         sem: WeakAsyncSemaphoreRef<ST>,
-        leases_granted: u64,
+        leases_granted: usize,
     },
     /// The future is done: the semaphore leases had been acquired at some time
     /// and polled out to the user.
@@ -349,7 +349,7 @@ impl<ST: sync_types::SyncTypes> marker::Unpin for AsyncSemaphoreWaitFuture<ST> {
 impl<ST: sync_types::SyncTypes> future::Future for AsyncSemaphoreWaitFuture<ST> {
     type Output = Result<AsyncSemaphoreLeasesGuard<ST>, interface::TpmErr>;
 
-    /// Poll for a lease grants from the associated [`AsyncSemaphore`].
+    /// Poll for lease grants from the associated [`AsyncSemaphore`].
     ///
     /// Upon future completion, either a [`AsyncSemaphoreLeasesGuard`] is
     /// returned or, if the associated [`AsyncSemaphore`] had been dropped
@@ -445,12 +445,12 @@ impl<ST: sync_types::SyncTypes> Drop for AsyncSemaphoreWaitFuture<ST> {
 /// Leases grant acquired from an [`AsyncSemaphore`].
 pub struct AsyncSemaphoreLeasesGuard<ST: sync_types::SyncTypes> {
     sem: pin::Pin<sync::Arc<AsyncSemaphore<ST>>>,
-    leases_granted: u64,
+    leases_granted: usize,
 }
 
 impl<ST: sync_types::SyncTypes> AsyncSemaphoreLeasesGuard<ST> {
     /// The number of leases acquired from the semaphore.
-    pub fn leases(&self) -> u64 {
+    pub fn leases(&self) -> usize {
         self.leases_granted
     }
 
@@ -471,7 +471,7 @@ impl<ST: sync_types::SyncTypes> AsyncSemaphoreLeasesGuard<ST> {
     /// # Errors:
     /// * [`TpmErr::InternalErr`](interface::TpmErr::InternalErr) - The number
     ///   of `leases` to split off exceeds the number of leases owned by `self`.
-    pub fn split_leases(&mut self, leases: u64) -> Result<Self, interface::TpmErr> {
+    pub fn split_leases(&mut self, leases: usize) -> Result<Self, interface::TpmErr> {
         if leases > self.leases_granted {
             Err(tpm_err_internal!())
         } else {
