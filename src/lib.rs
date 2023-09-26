@@ -8,6 +8,7 @@ mod crypto;
 mod index_permutation;
 mod interface;
 mod leases;
+mod nv;
 mod session;
 mod sessions;
 mod sync_types;
