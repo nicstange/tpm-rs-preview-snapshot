@@ -4,4 +4,7 @@ mod broadcast_future;
 mod rwlock;
 mod semaphore;
 
-pub use semaphore::{AsyncSemaphore, AsyncSemaphoreWaitFuture, AsyncSemaphoreLeasesGuard};
+pub use semaphore::{
+    AsyncSemaphore, AsyncSemaphoreError, AsyncSemaphoreExclusiveAllFuture,
+    AsyncSemaphoreLeasesGuard, AsyncSemaphoreExclusiveAllGuard, AsyncSemaphoreLeasesFuture,
+};
