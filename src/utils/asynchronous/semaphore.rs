@@ -1379,6 +1379,28 @@ impl<ST: sync_types::SyncTypes, T> AsyncSemaphoreLeasesGuard<ST, T> {
         }
     }
 
+    /// Split off a zero-sized, "trivial lease" grant.
+    ///
+    /// Effectively a special-cased, never failing variant of
+    /// [`split_leases()`](Self::split_leases) for the case that the latter's
+    /// `leases` argument is known to be zero, i.e. for splitting off a "trivial
+    /// lease" grant.
+    ///
+    /// Returns a [`AsyncSemaphoreLeasesGuard`] wrapping a zero-sized, i.e.
+    /// "trivial lease" grant.
+    pub fn spawn_trivial_lease(&self) -> Self {
+        self.sem
+            .as_ref()
+            .unwrap()
+            .state
+            .trivial_leases_granted
+            .fetch_add(1, atomic::Ordering::Relaxed);
+        Self {
+            sem: self.sem.clone(),
+            leases_granted: 0,
+        }
+    }
+
     /// Permanently remove the the owned leases from the associated
     /// [`AsyncSemaphore`]'s capacity.
     ///
@@ -1586,6 +1608,12 @@ pub struct AsyncSemaphoreExclusiveAllGuard<ST: sync_types::SyncTypes, T> {
 impl<ST: sync_types::SyncTypes, T> AsyncSemaphoreExclusiveAllGuard<ST, T> {
     fn new(sem: sync::Arc<AsyncSemaphore<ST, T>>) -> Self {
         Self { sem: Some(sem) }
+    }
+
+    /// Return the associated [`AsyncSemaphore`] the "exclusive-all" grant had
+    /// been issued for.
+    pub fn semaphore(&self) -> &AsyncSemaphore<ST, T> {
+        self.sem.as_ref().unwrap()
     }
 
     /// Grow or shrink the associated [`AsyncSemaphore`]'s capacity.
