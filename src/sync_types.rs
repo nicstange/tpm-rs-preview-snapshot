@@ -6,12 +6,15 @@ use core::ops::{Deref, DerefMut};
 use core::pin::Pin;
 use core::marker;
 
-pub trait Lock<T>: marker::Send + marker::Sync + From<T> {
+pub trait Lock<T>: marker::Send + marker::Sync + From<T>
+{
     type Guard<'a>: Deref<Target = T> + DerefMut
     where
         Self: 'a;
 
     fn lock(&self) -> Self::Guard<'_>;
+
+    fn get_mut(&mut self) -> &mut T;
 }
 
 pub trait RwLock<T>: marker::Send + marker::Sync + From<T> {
@@ -24,6 +27,8 @@ pub trait RwLock<T>: marker::Send + marker::Sync + From<T> {
 
     fn read(&self) -> Self::ReadGuard<'_>;
     fn write(&self) -> Self::WriteGuard<'_>;
+
+    fn get_mut(&mut self) -> &mut T;
 }
 
 pub trait SyncTypes {
