@@ -418,6 +418,7 @@ impl<ST: sync_types::SyncTypes, K: cmp::Ord + Clone, V> CacheSlotsStates<ST, K, 
     ) -> usize {
         let mut unallocated: usize = 0;
         for key in keys {
+            let key = <Q as borrow::Borrow<K>>::borrow(&key);
             match self.keys_to_slots.lookup_slot_index(&key) {
                 Some(slot_index) => {
                     match &self.slots_states[slot_index] {
@@ -521,6 +522,7 @@ impl<ST: sync_types::SyncTypes, K: cmp::Ord + Clone, V> CacheSlotsStates<ST, K, 
         let mut new_keys = 0;
         self.last_lru_seqno = self.last_lru_seqno.wrapping_add(1);
         for key in keys.clone() {
+            let key = <Q as borrow::Borrow<K>>::borrow(&key);
             match self.keys_to_slots.lookup_slot_index(&key) {
                 None => {
                     new_keys += 1;
@@ -559,7 +561,8 @@ impl<ST: sync_types::SyncTypes, K: cmp::Ord + Clone, V> CacheSlotsStates<ST, K, 
         // Find and assign empty slots for the new keys.
         let mut empty_slot_search_begin = 0;
         for key in keys.clone() {
-            let keys_to_slots_map_insertion_pos = match self.keys_to_slots.lookup_map_pos(&key) {
+            let key = <Q as borrow::Borrow<K>>::borrow(&key);
+            let keys_to_slots_map_insertion_pos = match self.keys_to_slots.lookup_map_pos(key) {
                 Ok(_) => continue,
                 Err(pos) => pos,
             };
@@ -593,7 +596,8 @@ impl<ST: sync_types::SyncTypes, K: cmp::Ord + Clone, V> CacheSlotsStates<ST, K, 
                             // Be conservative and roll back, i.e. remove all keys from the map
                             // which point to slots marked empty.
                             for key in keys {
-                                if let Some(slot_index) = self.keys_to_slots.lookup_slot_index(&key)
+                                let key = <Q as borrow::Borrow<K>>::borrow(&key);
+                                if let Some(slot_index) = self.keys_to_slots.lookup_slot_index(key)
                                 {
                                     if matches!(self.slots_states[slot_index], SlotState::Empty) {
                                         self.keys_to_slots.remove(&key);
@@ -607,7 +611,7 @@ impl<ST: sync_types::SyncTypes, K: cmp::Ord + Clone, V> CacheSlotsStates<ST, K, 
             };
             self.keys_to_slots.insert(
                 KeyToSlot {
-                    key: key.borrow().clone(),
+                    key: key.clone(),
                     slot_index,
                 },
                 Some(keys_to_slots_map_insertion_pos),
@@ -616,13 +620,14 @@ impl<ST: sync_types::SyncTypes, K: cmp::Ord + Clone, V> CacheSlotsStates<ST, K, 
 
         // And finally obtain reservations for the slots to stabilize them.
         for key in keys {
+            let key = <Q as borrow::Borrow<K>>::borrow(&key);
             let slot_index = self.keys_to_slots.lookup_slot_index(&key).unwrap();
             let slot = &mut self.slots_states[slot_index];
             let slots_trivial_lease = match slot {
                 SlotState::Empty => {
                     let slots_trivial_lease = slots_allocation_leases.spawn_trivial_lease();
                     *slot = SlotState::Used {
-                        key: key.borrow().clone(),
+                        key: key.clone(),
                         reservations: SlotReservationCount::new_reserved(
                             &mut slots_allocation_leases,
                         ),
@@ -741,18 +746,17 @@ impl<ST: sync_types::SyncTypes, K: cmp::Ord + Clone, V> Cache<ST, K, V> {
     ///   request can never be satisfied, because the number of `keys` specified
     ///   exceeds the maximum available cache slots or the internal [`Cache`]
     ///   state has been found inconsistent due to some bug.
-    pub fn reserve_slots<Q: borrow::Borrow<K>>(
+    pub fn reserve_slots<Q: borrow::Borrow<K>, KS: CacheKeys<Q>>(
         self: &sync::Arc<Self>,
-        keys: vec::Vec<Q>,
-    ) -> Result<CacheReserveSlotsFuture<ST, K, V, Q>, interface::TpmErr> {
+        keys: KS,
+    ) -> Result<CacheReserveSlotsFuture<ST, K, V, Q, KS>, interface::TpmErr> {
         // First try to get along with as few slot allocation semaphore leases
         // as possible by piggy-backing onto active allocations, if any.
         // However, do not grab reservations on the already allocated
         // slots before attempting to wait for leases from the semaphore as this
         // could result in a deadlock.
         let mut locked_slots_states = self.slots_states.lock();
-        let slot_leases_needed = locked_slots_states
-            .count_unallocated_keys(keys.iter().map(<Q as borrow::Borrow<K>>::borrow));
+        let slot_leases_needed = locked_slots_states.count_unallocated_keys(keys.iter());
         // No cutting in line.
         let slot_leases_needed = slot_leases_needed.max(1);
 
@@ -770,20 +774,19 @@ impl<ST: sync_types::SyncTypes, K: cmp::Ord + Clone, V> Cache<ST, K, V> {
                 asynchronous::AsyncSemaphoreError::TpmErr(e) => e,
             })?
         {
+            let reservations = locked_slots_states.establish_keys_reservations(
+                self,
+                keys.iter(),
+                slots_allocation_leases,
+            )?;
             return Ok(CacheReserveSlotsFuture {
-                progress: CacheReserveSlotsFutureProgress::Ready(
-                    locked_slots_states.establish_keys_reservations(
-                        self,
-                        keys.iter().map(<Q as borrow::Borrow<K>>::borrow),
-                        slots_allocation_leases,
-                    )?,
-                ),
+                progress: CacheReserveSlotsFutureProgress::Ready(reservations, keys),
             });
         }
 
         // Construct a future for waiting for the slot allocation leases.
         drop(locked_slots_states);
-        let keys_len = keys.len();
+        let keys_len = keys.iter().count();
         let acquire_leases_common = CacheReserveSlotsFutureAcquireLeasesCommon {
             cache: sync::Arc::downgrade(self),
             acquire_slot_leases_fut: self.slots.acquire_leases(slot_leases_needed).map_err(
@@ -795,6 +798,7 @@ impl<ST: sync_types::SyncTypes, K: cmp::Ord + Clone, V> Cache<ST, K, V> {
                 },
             )?,
             keys,
+            _phantom_q: marker::PhantomData,
         };
         Ok(CacheReserveSlotsFuture {
             progress: if slot_leases_needed < keys_len {
@@ -896,6 +900,14 @@ impl<ST: sync_types::SyncTypes, K: cmp::Ord + Clone, V> Cache<ST, K, V> {
                 slots_exclusive_all_guard,
             })
     }
+}
+
+pub trait CacheKeys<Q>: marker::Unpin {
+    type Iterator<'a>: Iterator<Item = Q> + Clone
+    where
+        Self: 'a;
+
+    fn iter(&self) -> Self::Iterator<'_>;
 }
 
 /// A [`Cache`] slot reservation previously established for a given key.
@@ -1019,9 +1031,10 @@ pub struct CacheReserveSlotsFuture<
     K: cmp::Ord + Clone,
     V,
     Q: borrow::Borrow<K>,
+    KS: CacheKeys<Q>,
 > {
     /// Internal future progress tracing, opaque to extern.
-    progress: CacheReserveSlotsFutureProgress<ST, K, V, Q>,
+    progress: CacheReserveSlotsFutureProgress<ST, K, V, Q, KS>,
 }
 
 /// Internal [`CacheReserveSlotsFuture`] progress tracking, opaque to extern.
@@ -1030,18 +1043,19 @@ enum CacheReserveSlotsFutureProgress<
     K: cmp::Ord + Clone,
     V,
     Q: borrow::Borrow<K>,
+    KS: CacheKeys<Q>,
 > {
     /// There had been previously existing reservations for a subset of the keys
     /// around by the time the future got instantiated. Try to piggy-back on
     /// those once the remainder of required cache slot allocations becomes
     /// available. If the piggy-backing fails, continue with
     /// [`AcquireSlotLeasesFull`](Self::AcquireSlotLeasesFull).
-    AcquireSlotLeasesMinimal(CacheReserveSlotsFutureAcquireLeasesCommon<ST, K, V, Q>),
+    AcquireSlotLeasesMinimal(CacheReserveSlotsFutureAcquireLeasesCommon<ST, K, V, Q, KS>),
     /// Main state for waiting on cache slot allocations, one for each key
     /// specified, to become available.
-    AcquireSlotLeasesFull(CacheReserveSlotsFutureAcquireLeasesCommon<ST, K, V, Q>),
+    AcquireSlotLeasesFull(CacheReserveSlotsFutureAcquireLeasesCommon<ST, K, V, Q, KS>),
     /// The future got completed right at instantiation time.
-    Ready(vec::Vec<CacheSlotReservation<ST, K, V>>),
+    Ready(vec::Vec<CacheSlotReservation<ST, K, V>>, KS),
     /// The future got completed and its result has been polled out.
     Done,
 }
@@ -1053,6 +1067,7 @@ struct CacheReserveSlotsFutureAcquireLeasesCommon<
     K: cmp::Ord + Clone,
     V,
     Q: borrow::Borrow<K>,
+    KS: CacheKeys<Q>,
 > {
     /// The [`Cache`] instance to make cache slot reservations in.
     cache: sync::Weak<Cache<ST, K, V>>,
@@ -1060,13 +1075,14 @@ struct CacheReserveSlotsFutureAcquireLeasesCommon<
     /// allocations to become available.
     acquire_slot_leases_fut: asynchronous::AsyncSemaphoreLeasesFuture<ST, SlotsVec<ST, V>>,
     /// The keys to allocate cache slots for.
-    keys: vec::Vec<Q>,
+    keys: KS,
+    _phantom_q: marker::PhantomData<Q>,
 }
 
-impl<ST: sync_types::SyncTypes, K: cmp::Ord + Clone, V, Q: borrow::Borrow<K>> future::Future
-    for CacheReserveSlotsFuture<ST, K, V, Q>
+impl<ST: sync_types::SyncTypes, K: cmp::Ord + Clone, V, Q: borrow::Borrow<K>, KS: CacheKeys<Q>>
+    future::Future for CacheReserveSlotsFuture<ST, K, V, Q, KS>
 {
-    type Output = Result<vec::Vec<CacheSlotReservation<ST, K, V>>, interface::TpmErr>;
+    type Output = Result<(vec::Vec<CacheSlotReservation<ST, K, V>>, KS), interface::TpmErr>;
 
     /// Poll for cache slot reservations to become available in the associated
     /// [`Cache`].
@@ -1107,6 +1123,7 @@ impl<ST: sync_types::SyncTypes, K: cmp::Ord + Clone, V, Q: borrow::Borrow<K>> fu
                             cache,
                             acquire_slot_leases_fut: _,
                             keys,
+                            _phantom_q,
                         } = common;
                         let cache = match cache.upgrade() {
                             Some(cache) => cache,
@@ -1118,9 +1135,8 @@ impl<ST: sync_types::SyncTypes, K: cmp::Ord + Clone, V, Q: borrow::Borrow<K>> fu
                         };
 
                         let mut locked_slots_states = cache.slots_states.lock();
-                        let slot_leases_needed = locked_slots_states.count_unallocated_keys(
-                            keys.iter().map(<Q as borrow::Borrow<K>>::borrow),
-                        );
+                        let slot_leases_needed =
+                            locked_slots_states.count_unallocated_keys(keys.iter());
                         if slot_leases_needed > slots_allocation_leases.leases() {
                             // One or more of the previously existing slot allocations has been
                             // freed in the meanwhile and no piggy-backing is possible. Give up
@@ -1129,7 +1145,7 @@ impl<ST: sync_types::SyncTypes, K: cmp::Ord + Clone, V, Q: borrow::Borrow<K>> fu
                             drop(slots_allocation_leases);
                             let acquire_slot_leases_fut = match cache
                                 .slots
-                                .acquire_leases(keys.len())
+                                .acquire_leases(keys.iter().count())
                             {
                                 Ok(acquire_slot_leases) => acquire_slot_leases,
                                 Err(e) => {
@@ -1147,15 +1163,17 @@ impl<ST: sync_types::SyncTypes, K: cmp::Ord + Clone, V, Q: borrow::Borrow<K>> fu
                                     cache: sync::Arc::downgrade(&cache),
                                     acquire_slot_leases_fut,
                                     keys,
+                                    _phantom_q: marker::PhantomData,
                                 },
                             );
                             future::Future::poll(pin::Pin::new(this), cx)
                         } else {
-                            task::Poll::Ready(locked_slots_states.establish_keys_reservations(
+                            let reservations = locked_slots_states.establish_keys_reservations(
                                 &cache,
-                                keys.iter().map(<Q as borrow::Borrow<K>>::borrow),
+                                keys.iter(),
                                 slots_allocation_leases,
-                            ))
+                            )?;
+                            task::Poll::Ready(Ok((reservations, keys)))
                         }
                     }
                     task::Poll::Ready(Err(e)) => {
@@ -1181,6 +1199,7 @@ impl<ST: sync_types::SyncTypes, K: cmp::Ord + Clone, V, Q: borrow::Borrow<K>> fu
                             cache,
                             acquire_slot_leases_fut: _,
                             keys,
+                            _phantom_q,
                         } = common;
                         let cache = match cache.upgrade() {
                             Some(cache) => cache,
@@ -1192,11 +1211,13 @@ impl<ST: sync_types::SyncTypes, K: cmp::Ord + Clone, V, Q: borrow::Borrow<K>> fu
                         };
 
                         let mut locked_slots_states = cache.slots_states.lock();
-                        task::Poll::Ready(locked_slots_states.establish_keys_reservations(
+                        let reservations = locked_slots_states.establish_keys_reservations(
                             &cache,
-                            keys.iter().map(<Q as borrow::Borrow<K>>::borrow),
+                            keys.iter(),
                             slots_allocation_leases,
-                        ))
+                        )?;
+
+                        task::Poll::Ready(Ok((reservations, keys)))
                     }
                     task::Poll::Ready(Err(e)) => {
                         let e = match e {
@@ -1209,10 +1230,10 @@ impl<ST: sync_types::SyncTypes, K: cmp::Ord + Clone, V, Q: borrow::Borrow<K>> fu
                     }
                 }
             }
-            CacheReserveSlotsFutureProgress::Ready(slots_reservations) => {
+            CacheReserveSlotsFutureProgress::Ready(slots_reservations, keys) => {
                 // The slot allocation leases had been available at future instantiation
                 // time already and the future had been completed right away. Grab the result.
-                task::Poll::Ready(Ok(slots_reservations))
+                task::Poll::Ready(Ok((slots_reservations, keys)))
             }
             CacheReserveSlotsFutureProgress::Done => {
                 // The future had been polled to completion already.
@@ -1222,8 +1243,8 @@ impl<ST: sync_types::SyncTypes, K: cmp::Ord + Clone, V, Q: borrow::Borrow<K>> fu
     }
 }
 
-impl<ST: sync_types::SyncTypes, K: cmp::Ord + Clone, V, Q: borrow::Borrow<K>> marker::Unpin
-    for CacheReserveSlotsFuture<ST, K, V, Q>
+impl<ST: sync_types::SyncTypes, K: cmp::Ord + Clone, V, Q: borrow::Borrow<K>, KS: CacheKeys<Q>>
+    marker::Unpin for CacheReserveSlotsFuture<ST, K, V, Q, KS>
 {
 }
 
