@@ -36,6 +36,12 @@ impl<T> sync_types::Lock<T> for TestNopLock<T> {
         );
         TestNopLockGuard { lock: self }
     }
+
+    fn get_mut(&mut self) -> &mut T {
+        assert_eq!(self.locked.load(atomic::Ordering::Relaxed), false);
+        let p = self.v.get();
+        unsafe { &mut *p }
+    }
 }
 
 pub struct TestNopLockGuard<'a, T> {
@@ -111,6 +117,12 @@ impl<T> sync_types::RwLock<T> for TestNopRwLock<T> {
             "Testing TestNopRwLocks are not expected to ever be contended."
         );
         TestNopRwLockWriteGuard { lock: self }
+    }
+
+    fn get_mut(&mut self) -> &mut T {
+        assert_eq!(self.locked.load(atomic::Ordering::Relaxed), 0);
+        let p = self.v.get();
+        unsafe { &mut *p }
     }
 }
 
