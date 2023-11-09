@@ -1,5 +1,5 @@
 extern crate alloc;
-use alloc::{sync::Arc, vec::Vec};
+use alloc::{sync::Arc, vec::Vec, boxed::Box};
 
 use super::cfg_zeroize;
 use crate::interface;
@@ -14,6 +14,18 @@ pub fn arc_try_new<T>(v: T) -> Result<Arc<T>, interface::TpmErr> {
 #[inline(always)]
 pub fn arc_try_new<T>(v: T) -> Result<Arc<T>, interface::TpmErr> {
     Ok(Arc::new(v))
+}
+
+#[cfg(feature = "use_allocator_api")]
+#[inline(always)]
+pub fn box_try_new<T>(v: T) -> Result<Box<T>, interface::TpmErr> {
+    Box::try_new(v).map_err(|_| tpm_err_rc!(MEMORY))?
+}
+
+#[cfg(not(feature = "use_allocator_api"))]
+#[inline(always)]
+pub fn box_try_new<T>(v: T) -> Result<Box<T>, interface::TpmErr> {
+    Ok(Box::new(v))
 }
 
 pub fn try_alloc_zeroizing_vec<T: cfg_zeroize::Zeroize + Default + Clone>(
