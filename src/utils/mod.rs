@@ -1,5 +1,5 @@
 pub mod asynchronous;
-
+pub mod bitmanip;
 pub mod cfg_zeroize;
 mod try_new_helpers;
 
