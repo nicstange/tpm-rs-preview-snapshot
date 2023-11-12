@@ -19,6 +19,16 @@ impl convert::From<AllocBlockCount> for u64 {
     }
 }
 
+impl ops::Add<AllocBlockCount> for AllocBlockCount {
+    type Output = Self;
+
+    fn add(self, rhs: Self) -> Self::Output {
+        Self {
+            count: self.count.checked_add(rhs.count).unwrap(),
+        }
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub struct PhysicalAllocBlockIndex {
     index: u64,
@@ -106,13 +116,18 @@ impl ops::Sub<Self> for LogicalAllocBlockIndex {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub struct BlockRange<I: Copy + cmp::Ord + ops::Add<C, Output = I> + ops::Sub<I, Output = C>, C: Copy> {
+pub struct BlockRange<
+    I: Copy + cmp::Ord + ops::Add<C, Output = I> + ops::Sub<I, Output = C>,
+    C: Copy,
+> {
     b: I,
     e: I,
     _phantom_c: marker::PhantomData<C>,
 }
 
-impl<I: Copy + cmp::Ord + ops::Add<C, Output = I> + ops::Sub<I, Output = C>, C: Copy> BlockRange<I, C> {
+impl<I: Copy + cmp::Ord + ops::Add<C, Output = I> + ops::Sub<I, Output = C>, C: Copy>
+    BlockRange<I, C>
+{
     pub fn new(b: I, e: I) -> Self {
         debug_assert!(b < e);
         Self {
@@ -139,8 +154,8 @@ impl<I: Copy + cmp::Ord + ops::Add<C, Output = I> + ops::Sub<I, Output = C>, C: 
     }
 }
 
-impl<I: Copy + cmp::Ord + ops::Add<C, Output = I> + ops::Sub<I, Output = C>, C: Copy> convert::From<(I, C)>
-    for BlockRange<I, C>
+impl<I: Copy + cmp::Ord + ops::Add<C, Output = I> + ops::Sub<I, Output = C>, C: Copy>
+    convert::From<(I, C)> for BlockRange<I, C>
 {
     fn from(value: (I, C)) -> Self {
         Self {
