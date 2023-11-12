@@ -3,33 +3,542 @@ use super::{cache, error, extents, index, keys, layout};
 use super::{chip, chunked_io_region};
 use crate::crypto::{ct_cmp, hash, io_slices};
 use crate::interface;
-use crate::nv::auth_tree;
 use crate::sync_types;
 use crate::utils;
 use alloc::{sync, vec};
-use core::{future, marker, ops, pin, slice, task};
+use core::{convert, future, marker, mem, ops, pin, slice, task};
 use ops::DerefMut as _;
 use utils::bitmanip::{BitManip as _, UBitManip as _};
 use utils::{asynchronous, cfg_zeroize};
 
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+struct AuthTreeDataAllocBlockIndex {
+    index: u64,
+}
+
+impl convert::From<u64> for AuthTreeDataAllocBlockIndex {
+    fn from(value: u64) -> Self {
+        Self { index: value }
+    }
+}
+
+impl convert::From<AuthTreeDataAllocBlockIndex> for u64 {
+    fn from(value: AuthTreeDataAllocBlockIndex) -> Self {
+        value.index
+    }
+}
+
+impl ops::Add<layout::AllocBlockCount> for AuthTreeDataAllocBlockIndex {
+    type Output = Self;
+
+    fn add(self, rhs: layout::AllocBlockCount) -> Self::Output {
+        Self {
+            index: self.index.checked_add(u64::from(rhs)).unwrap(),
+        }
+    }
+}
+
+impl ops::AddAssign<layout::AllocBlockCount> for AuthTreeDataAllocBlockIndex {
+    fn add_assign(&mut self, rhs: layout::AllocBlockCount) {
+        self.index = self.index.checked_add(u64::from(rhs)).unwrap();
+    }
+}
+
+impl ops::Sub<Self> for AuthTreeDataAllocBlockIndex {
+    type Output = layout::AllocBlockCount;
+
+    fn sub(self, rhs: Self) -> Self::Output {
+        Self::Output::from(self.index.checked_sub(rhs.index).unwrap())
+    }
+}
+
+type AuthTreeDataAllocBlockRange =
+    layout::BlockRange<AuthTreeDataAllocBlockIndex, layout::AllocBlockCount>;
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct AuthTreeDataBlockCount {
+    count: u64,
+}
+
+impl convert::From<u64> for AuthTreeDataBlockCount {
+    fn from(value: u64) -> Self {
+        Self { count: value }
+    }
+}
+
+impl convert::From<AuthTreeDataBlockCount> for u64 {
+    fn from(value: AuthTreeDataBlockCount) -> Self {
+        value.count
+    }
+}
+
+impl ops::Add<AuthTreeDataBlockCount> for AuthTreeDataBlockCount {
+    type Output = Self;
+
+    fn add(self, rhs: Self) -> Self::Output {
+        Self {
+            count: self.count.checked_add(rhs.count).unwrap(),
+        }
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-struct AuthTreeNodeCacheId {
-    covered_auth_tree_data_blocks_begin: u64,
+struct AuthTreeDataBlockIndex {
+    index: u64,
+}
+
+impl AuthTreeDataBlockIndex {
+    fn new(
+        auth_tree_data_allocation_block_index: AuthTreeDataAllocBlockIndex,
+        auth_tree_data_block_allocation_blocks_log2: u8,
+    ) -> Self {
+        Self {
+            index: u64::from(auth_tree_data_allocation_block_index)
+                >> auth_tree_data_block_allocation_blocks_log2,
+        }
+    }
+}
+
+impl convert::From<u64> for AuthTreeDataBlockIndex {
+    fn from(value: u64) -> Self {
+        Self { index: value }
+    }
+}
+
+impl convert::From<AuthTreeDataBlockIndex> for u64 {
+    fn from(value: AuthTreeDataBlockIndex) -> Self {
+        value.index
+    }
+}
+
+impl ops::Add<AuthTreeDataBlockCount> for AuthTreeDataBlockIndex {
+    type Output = Self;
+
+    fn add(self, rhs: AuthTreeDataBlockCount) -> Self::Output {
+        Self {
+            index: self.index.checked_add(u64::from(rhs)).unwrap(),
+        }
+    }
+}
+
+impl ops::AddAssign<AuthTreeDataBlockCount> for AuthTreeDataBlockIndex {
+    fn add_assign(&mut self, rhs: AuthTreeDataBlockCount) {
+        self.index = self.index.checked_add(u64::from(rhs)).unwrap();
+    }
+}
+
+impl ops::Sub<Self> for AuthTreeDataBlockIndex {
+    type Output = AuthTreeDataBlockCount;
+
+    fn sub(self, rhs: Self) -> Self::Output {
+        Self::Output::from(self.index.checked_sub(rhs.index).unwrap())
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct AuthTreeNodeId {
+    /// First Authentication Tree Data block authenticated by the node's
+    /// leftmost leaf descandant.
+    covered_auth_tree_data_blocks_begin: AuthTreeDataBlockIndex,
+    /// Node level, counted zero-based from bottom.
     level: u8,
 }
 
-impl AuthTreeNodeCacheId {
-    fn new(covered_auth_tree_data_blocks_begin: u64, level: u8, digests_per_node_log2: u8) -> Self {
+impl AuthTreeNodeId {
+    fn new(
+        covered_auth_tree_data_block_index: AuthTreeDataBlockIndex,
+        level: u8,
+        digests_per_node_log2: u8,
+    ) -> Self {
+        let level_covered_index_mask_bits = ((level + 1) * digests_per_node_log2) as u32;
+        let covered_auth_tree_data_blocks_begin = if level_covered_index_mask_bits < u64::BITS {
+            u64::from(covered_auth_tree_data_block_index)
+                & !u64::trailing_bits_mask(level_covered_index_mask_bits)
+        } else {
+            0
+        };
         Self {
-            covered_auth_tree_data_blocks_begin: covered_auth_tree_data_blocks_begin
-                & !u64::trailing_bits_mask((level * digests_per_node_log2) as u32),
+            covered_auth_tree_data_blocks_begin: AuthTreeDataBlockIndex::from(
+                covered_auth_tree_data_blocks_begin,
+            ),
             level,
         }
+    }
+
+    fn last_covered_auth_tree_data_block(
+        &self,
+        digests_per_node_log2: u8,
+    ) -> AuthTreeDataBlockIndex {
+        let level_covered_index_mask_bits = ((self.level + 1) * digests_per_node_log2) as u32;
+        let last_covered_auth_tree_data_block = if level_covered_index_mask_bits < u64::BITS {
+            let level_covered_index_mask = u64::trailing_bits_mask(level_covered_index_mask_bits);
+            debug_assert_eq!(
+                u64::from(self.covered_auth_tree_data_blocks_begin) & level_covered_index_mask,
+                0
+            );
+            u64::from(self.covered_auth_tree_data_blocks_begin) | level_covered_index_mask
+        } else {
+            u64::MAX
+        };
+        AuthTreeDataBlockIndex::from(last_covered_auth_tree_data_block)
     }
 }
 
 struct AuthTreeNode {
     data: vec::Vec<u8>,
+}
+
+/// Map physical [Allocation
+/// Blocks](layout::ImageLayout::allocation_block_size_128b_log2) indices into
+/// the Authentication Tree Data domain and vice versa.
+///
+/// The Authentication Trees don't verify their own storage, therefore the
+/// authenticated data is not contiguous on the physical storage, but
+/// interspersed with Authentication Tree node storage extents. The
+/// [`AuthTreeDataAllocationBlocksMap`](Self) provides a means for translating
+/// between physical addresses of [Allocation
+/// Blocks](layout::ImageLayout::allocation_block_size_128b_log2) subject to
+/// authentication and contiguous Authentication Tree Data domain indices.
+struct AuthTreeDataAllocationBlocksMap {
+    /// Authentication Tree storage extents represented as
+    /// `(physical_end, accumulated_block_count)`, in units of allocation
+    /// blocks, ordered by `physical_end`, with `accumulated_block_count`
+    /// being equal to the sum of all allocation blocks allocated to the
+    /// Authentication Tree node storage up to `physical_end`.
+    auth_tree_storage_physical_extents: vec::Vec<(u64, u64)>,
+}
+
+impl AuthTreeDataAllocationBlocksMap {
+    fn new(logical_auth_tree_extents: &extents::LogicalExtents) -> Result<Self, interface::TpmErr> {
+        let mut auth_tree_storage_physical_extents = vec::Vec::new();
+        auth_tree_storage_physical_extents
+            .try_reserve_exact(logical_auth_tree_extents.len())
+            .map_err(|_| tpm_err_rc!(MEMORY))?;
+        for logical_extent in logical_auth_tree_extents.iter() {
+            let physical_range = logical_extent.physical_range();
+            // Temporarily add in unsorted order and with this
+            // entry's block count only, the list will be sorted and the latter subsequently
+            // accumulated below.
+            auth_tree_storage_physical_extents.push((
+                u64::from(physical_range.end()),
+                u64::from(physical_range.block_count()),
+            ));
+        }
+        auth_tree_storage_physical_extents.sort_unstable_by_key(|e| e.0);
+
+        let mut accumulated_block_count = 0;
+        for e in auth_tree_storage_physical_extents.iter_mut() {
+            accumulated_block_count += e.1;
+            e.1 = accumulated_block_count;
+        }
+
+        Ok(Self {
+            auth_tree_storage_physical_extents,
+        })
+    }
+
+    fn map_physical_to_data_allocation_blocks(
+        &self,
+        physical_range: &layout::PhysicalAllocBlockRange,
+    ) -> AuthTreeDataAllocBlockRange {
+        // Convert the physical allocation block index to an Authentication Tree data
+        // one by subtracting from the former the space occupied by any
+        // Authentication Tree Nodes located before it in the image.
+        let i = self
+            .auth_tree_storage_physical_extents
+            .partition_point(|e| e.0 <= u64::from(physical_range.begin()));
+        let auth_tree_storage_accumulated_block_count = if i != 0 {
+            self.auth_tree_storage_physical_extents[i - 1].1
+        } else {
+            0
+        };
+        // The physical allocation block range shall not intersect with any
+        // Authentication Tree nodes.
+        if i < self.auth_tree_storage_physical_extents.len() {
+            let next = self.auth_tree_storage_physical_extents[i];
+            let next_begin = next.0 - (next.1 - auth_tree_storage_accumulated_block_count);
+            let next_begin = layout::PhysicalAllocBlockIndex::from(next_begin);
+            debug_assert!(next_begin >= physical_range.end());
+        }
+        AuthTreeDataAllocBlockRange::from((
+            AuthTreeDataAllocBlockIndex::from(
+                u64::from(physical_range.begin()) - auth_tree_storage_accumulated_block_count,
+            ),
+            physical_range.block_count(),
+        ))
+    }
+
+    fn iter_data_range_mapping(
+        &self,
+        data_range: &AuthTreeDataAllocBlockRange,
+    ) -> AuthTreeDataAllocationBlocksMapIterator<'_> {
+        let map_index = self
+            .auth_tree_storage_physical_extents
+            .partition_point(|e| e.0 - e.1 <= u64::from(data_range.begin()));
+        AuthTreeDataAllocationBlocksMapIterator {
+            map: self,
+            map_index,
+            next_data_allocation_block: data_range.begin(),
+            data_allocation_blocks_end: data_range.end(),
+        }
+    }
+}
+
+struct AuthTreeDataAllocationBlocksMapIterator<'a> {
+    map: &'a AuthTreeDataAllocationBlocksMap,
+    map_index: usize,
+    next_data_allocation_block: AuthTreeDataAllocBlockIndex,
+    data_allocation_blocks_end: AuthTreeDataAllocBlockIndex,
+}
+
+impl<'a> Iterator for AuthTreeDataAllocationBlocksMapIterator<'a> {
+    type Item = (AuthTreeDataAllocBlockRange, layout::PhysicalAllocBlockIndex);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.next_data_allocation_block == self.data_allocation_blocks_end {
+            return None;
+        }
+
+        let data_allocation_blocks_begin = u64::from(self.next_data_allocation_block);
+        let auth_tree_storage_accumulated_block_count = if self.map_index > 0 {
+            let e = self.map.auth_tree_storage_physical_extents[self.map_index - 1];
+            debug_assert!(e.0 - e.1 <= data_allocation_blocks_begin);
+            e.1
+        } else {
+            0
+        };
+        let data_allocation_blocks_end =
+            if self.map_index < self.map.auth_tree_storage_physical_extents.len() {
+                let e = self.map.auth_tree_storage_physical_extents[self.map_index];
+                if e.0 - e.1 < u64::from(self.data_allocation_blocks_end) {
+                    self.map_index += 1;
+                    e.0 - e.1
+                } else {
+                    u64::from(self.data_allocation_blocks_end)
+                }
+            } else {
+                u64::from(self.data_allocation_blocks_end)
+            };
+        self.next_data_allocation_block =
+            AuthTreeDataAllocBlockIndex::from(data_allocation_blocks_end);
+
+        let physical_allocation_blocks_begin =
+            data_allocation_blocks_begin + auth_tree_storage_accumulated_block_count;
+
+        Some((
+            AuthTreeDataAllocBlockRange::new(
+                AuthTreeDataAllocBlockIndex::from(data_allocation_blocks_begin),
+                self.next_data_allocation_block,
+            ),
+            layout::PhysicalAllocBlockIndex::from(physical_allocation_blocks_begin),
+        ))
+    }
+}
+
+#[test]
+fn test_auth_tree_data_allocation_blocks_map_from_phys() {
+    let mut logical_auth_tree_extents = extents::LogicalExtents::new();
+    logical_auth_tree_extents
+        .extend_by_physical(layout::PhysicalAllocBlockRange::from((
+            layout::PhysicalAllocBlockIndex::from(1),
+            layout::AllocBlockCount::from(1),
+        )))
+        .unwrap();
+    logical_auth_tree_extents
+        .extend_by_physical(layout::PhysicalAllocBlockRange::from((
+            layout::PhysicalAllocBlockIndex::from(4),
+            layout::AllocBlockCount::from(1),
+        )))
+        .unwrap();
+    let map = AuthTreeDataAllocationBlocksMap::new(&logical_auth_tree_extents).unwrap();
+
+    let auth_tree_data_range =
+        map.map_physical_to_data_allocation_blocks(&layout::PhysicalAllocBlockRange::from((
+            layout::PhysicalAllocBlockIndex::from(0),
+            layout::AllocBlockCount::from(1),
+        )));
+    assert_eq!(u64::from(auth_tree_data_range.begin()), 0);
+    assert_eq!(u64::from(auth_tree_data_range.end()), 1);
+
+    let auth_tree_data_range =
+        map.map_physical_to_data_allocation_blocks(&layout::PhysicalAllocBlockRange::from((
+            layout::PhysicalAllocBlockIndex::from(2),
+            layout::AllocBlockCount::from(1),
+        )));
+    assert_eq!(u64::from(auth_tree_data_range.begin()), 1);
+    assert_eq!(u64::from(auth_tree_data_range.end()), 2);
+
+    let auth_tree_data_range =
+        map.map_physical_to_data_allocation_blocks(&layout::PhysicalAllocBlockRange::from((
+            layout::PhysicalAllocBlockIndex::from(3),
+            layout::AllocBlockCount::from(1),
+        )));
+    assert_eq!(u64::from(auth_tree_data_range.begin()), 2);
+    assert_eq!(u64::from(auth_tree_data_range.end()), 3);
+
+    let auth_tree_data_range =
+        map.map_physical_to_data_allocation_blocks(&layout::PhysicalAllocBlockRange::from((
+            layout::PhysicalAllocBlockIndex::from(2),
+            layout::AllocBlockCount::from(2),
+        )));
+    assert_eq!(u64::from(auth_tree_data_range.begin()), 1);
+    assert_eq!(u64::from(auth_tree_data_range.end()), 3);
+
+    let auth_tree_data_range =
+        map.map_physical_to_data_allocation_blocks(&layout::PhysicalAllocBlockRange::from((
+            layout::PhysicalAllocBlockIndex::from(5),
+            layout::AllocBlockCount::from(1),
+        )));
+    assert_eq!(u64::from(auth_tree_data_range.begin()), 3);
+    assert_eq!(u64::from(auth_tree_data_range.end()), 4);
+
+    let auth_tree_data_range =
+        map.map_physical_to_data_allocation_blocks(&layout::PhysicalAllocBlockRange::from((
+            layout::PhysicalAllocBlockIndex::from(6),
+            layout::AllocBlockCount::from(1),
+        )));
+    assert_eq!(u64::from(auth_tree_data_range.begin()), 4);
+    assert_eq!(u64::from(auth_tree_data_range.end()), 5);
+}
+
+#[test]
+fn test_auth_tree_data_allocation_blocks_map_to_phys() {
+    let mut logical_auth_tree_extents = extents::LogicalExtents::new();
+    logical_auth_tree_extents
+        .extend_by_physical(layout::PhysicalAllocBlockRange::from((
+            layout::PhysicalAllocBlockIndex::from(1),
+            layout::AllocBlockCount::from(1),
+        )))
+        .unwrap();
+    logical_auth_tree_extents
+        .extend_by_physical(layout::PhysicalAllocBlockRange::from((
+            layout::PhysicalAllocBlockIndex::from(4),
+            layout::AllocBlockCount::from(1),
+        )))
+        .unwrap();
+    let map = AuthTreeDataAllocationBlocksMap::new(&logical_auth_tree_extents).unwrap();
+
+    let mut mapped_auth_tree_data_range =
+        map.iter_data_range_mapping(&AuthTreeDataAllocBlockRange::from((
+            AuthTreeDataAllocBlockIndex::from(0),
+            layout::AllocBlockCount::from(1),
+        )));
+    assert_eq!(
+        mapped_auth_tree_data_range.next(),
+        Some((
+            AuthTreeDataAllocBlockRange::from((
+                AuthTreeDataAllocBlockIndex::from(0),
+                layout::AllocBlockCount::from(1),
+            )),
+            layout::PhysicalAllocBlockIndex::from(0)
+        ))
+    );
+    assert!(mapped_auth_tree_data_range.next().is_none());
+
+    let mut mapped_auth_tree_data_range =
+        map.iter_data_range_mapping(&AuthTreeDataAllocBlockRange::from((
+            AuthTreeDataAllocBlockIndex::from(0),
+            layout::AllocBlockCount::from(2),
+        )));
+    assert_eq!(
+        mapped_auth_tree_data_range.next(),
+        Some((
+            AuthTreeDataAllocBlockRange::from((
+                AuthTreeDataAllocBlockIndex::from(0),
+                layout::AllocBlockCount::from(1),
+            )),
+            layout::PhysicalAllocBlockIndex::from(0)
+        ))
+    );
+    assert_eq!(
+        mapped_auth_tree_data_range.next(),
+        Some((
+            AuthTreeDataAllocBlockRange::from((
+                AuthTreeDataAllocBlockIndex::from(1),
+                layout::AllocBlockCount::from(1),
+            )),
+            layout::PhysicalAllocBlockIndex::from(2)
+        ))
+    );
+    assert!(mapped_auth_tree_data_range.next().is_none());
+
+    let mut mapped_auth_tree_data_range =
+        map.iter_data_range_mapping(&AuthTreeDataAllocBlockRange::from((
+            AuthTreeDataAllocBlockIndex::from(1),
+            layout::AllocBlockCount::from(2),
+        )));
+    assert_eq!(
+        mapped_auth_tree_data_range.next(),
+        Some((
+            AuthTreeDataAllocBlockRange::from((
+                AuthTreeDataAllocBlockIndex::from(1),
+                layout::AllocBlockCount::from(2),
+            )),
+            layout::PhysicalAllocBlockIndex::from(2)
+        ))
+    );
+    assert!(mapped_auth_tree_data_range.next().is_none());
+
+    let mut mapped_auth_tree_data_range =
+        map.iter_data_range_mapping(&AuthTreeDataAllocBlockRange::from((
+            AuthTreeDataAllocBlockIndex::from(1),
+            layout::AllocBlockCount::from(4),
+        )));
+    assert_eq!(
+        mapped_auth_tree_data_range.next(),
+        Some((
+            AuthTreeDataAllocBlockRange::from((
+                AuthTreeDataAllocBlockIndex::from(1),
+                layout::AllocBlockCount::from(2),
+            )),
+            layout::PhysicalAllocBlockIndex::from(2)
+        ))
+    );
+    assert_eq!(
+        mapped_auth_tree_data_range.next(),
+        Some((
+            AuthTreeDataAllocBlockRange::from((
+                AuthTreeDataAllocBlockIndex::from(3),
+                layout::AllocBlockCount::from(2),
+            )),
+            layout::PhysicalAllocBlockIndex::from(5)
+        ))
+    );
+    assert!(mapped_auth_tree_data_range.next().is_none());
+
+    let mut mapped_auth_tree_data_range =
+        map.iter_data_range_mapping(&AuthTreeDataAllocBlockRange::from((
+            AuthTreeDataAllocBlockIndex::from(3),
+            layout::AllocBlockCount::from(1),
+        )));
+    assert_eq!(
+        mapped_auth_tree_data_range.next(),
+        Some((
+            AuthTreeDataAllocBlockRange::from((
+                AuthTreeDataAllocBlockIndex::from(3),
+                layout::AllocBlockCount::from(1),
+            )),
+            layout::PhysicalAllocBlockIndex::from(5)
+        ))
+    );
+    assert!(mapped_auth_tree_data_range.next().is_none());
+
+    let mut mapped_auth_tree_data_range =
+        map.iter_data_range_mapping(&AuthTreeDataAllocBlockRange::from((
+            AuthTreeDataAllocBlockIndex::from(4),
+            layout::AllocBlockCount::from(1),
+        )));
+    assert_eq!(
+        mapped_auth_tree_data_range.next(),
+        Some((
+            AuthTreeDataAllocBlockRange::from((
+                AuthTreeDataAllocBlockIndex::from(4),
+                layout::AllocBlockCount::from(1),
+            )),
+            layout::PhysicalAllocBlockIndex::from(6)
+        ))
+    );
+    assert!(mapped_auth_tree_data_range.next().is_none());
 }
 
 #[repr(u8)]
@@ -44,6 +553,7 @@ pub struct AuthTree<ST: sync_types::SyncTypes, C: chip::NVChip> {
     chip: pin::Pin<sync::Arc<C>>,
 
     auth_tree_extents: extents::LogicalExtents,
+    auth_tree_data_allocation_blocks_map: AuthTreeDataAllocationBlocksMap,
 
     digests_per_node_log2: u8,
     digests_per_node_minus_one_inv_mod_u64: u64,
@@ -51,7 +561,7 @@ pub struct AuthTree<ST: sync_types::SyncTypes, C: chip::NVChip> {
     auth_tree_levels: u8,
     auth_tree_data_block_count: u64,
 
-    auth_tree_node_cache: sync::Arc<cache::Cache<ST, AuthTreeNodeCacheId, AuthTreeNode>>,
+    auth_tree_node_cache: sync::Arc<cache::Cache<ST, AuthTreeNodeId, AuthTreeNode>>,
 
     /// Copied verbatim from [`ImageLayout`](layout::ImageLayout).
     auth_tree_hash_alg: interface::TpmiAlgHash,
@@ -126,6 +636,9 @@ impl<ST: sync_types::SyncTypes, C: chip::NVChip> AuthTree<ST, C> {
             return Err(error::NVError::InvalidAuthTreeDimensions);
         }
 
+        let auth_tree_data_allocation_blocks_map =
+            AuthTreeDataAllocationBlocksMap::new(&auth_tree_extents)?;
+
         // Deduce the Authentication Tree dimensions from the node count.
         let auth_tree_node_count = u64::from(auth_tree_nodes_allocation_block_count)
             >> auth_tree_node_allocation_blocks_log2;
@@ -167,6 +680,7 @@ impl<ST: sync_types::SyncTypes, C: chip::NVChip> AuthTree<ST, C> {
         Ok(asynchronous::AsyncRwLock::new(Self {
             chip,
             auth_tree_extents,
+            auth_tree_data_allocation_blocks_map,
             digests_per_node_log2,
             digests_per_node_minus_one_inv_mod_u64,
             auth_tree_levels,
@@ -185,18 +699,15 @@ impl<ST: sync_types::SyncTypes, C: chip::NVChip> AuthTree<ST, C> {
 
     fn auth_tree_node_io_region(
         &self,
-        node_id: &AuthTreeNodeCacheId,
+        node_id: &AuthTreeNodeId,
     ) -> Result<chunked_io_region::ChunkedIoRegion, error::NVError> {
         debug_assert!(node_id.level < self.auth_tree_levels);
-        debug_assert_eq!(
-            node_id.covered_auth_tree_data_blocks_begin
-                & u64::trailing_bits_mask((node_id.level * self.digests_per_node_log2) as u32),
-            0
-        );
-        if node_id.covered_auth_tree_data_blocks_begin >= self.auth_tree_data_block_count {
+        if u64::from(node_id.covered_auth_tree_data_blocks_begin)
+            >= u64::from(self.auth_tree_data_block_count)
+        {
             return Err(error::NVError::IOBlockOutOfRange);
         }
-        let dfs_pre_node_index = phys_auth_tree_data_block_index_to_auth_tree_node_entry(
+        let dfs_pre_node_index = auth_tree_data_block_index_to_auth_tree_node_entry(
             node_id.covered_auth_tree_data_blocks_begin,
             node_id.level,
             self.auth_tree_levels,
@@ -232,7 +743,10 @@ impl<ST: sync_types::SyncTypes, C: chip::NVChip> AuthTree<ST, C> {
                 + 7)
     }
 
-    fn hmac_root_node(&self, node_data: &[u8]) -> Result<vec::Vec<u8>, error::NVError> {
+    fn hmac_root_node<'a, DEI: Iterator<Item = &'a [u8]>>(
+        &self,
+        digest_entries_iterator: DEI,
+    ) -> Result<vec::Vec<u8>, error::NVError> {
         let auth_config_version = 0u32.to_be_bytes();
         // It should not be needed AFAICT and is in part redundant to those
         // AuthSubjectDataPrefix prefixes hashed alongside the subjects, but pin
@@ -253,14 +767,23 @@ impl<ST: sync_types::SyncTypes, C: chip::NVChip> AuthTree<ST, C> {
             )),
             Some(&auth_config_version),
             Some(&auth_config),
-            Some(node_data),
         ]));
+        for digest_entry in digest_entries_iterator {
+            debug_assert_eq!(digest_entry.len(), self.auth_tree_digest_len as usize);
+            h.update(io_slices::IoSlices::new(&mut [Some(digest_entry)]));
+        }
         h.finalize_into(&mut root_hmac_digest);
         Ok(root_hmac_digest)
     }
 
     fn authenticate_root_node(&self, node_data: &[u8]) -> Result<(), error::NVError> {
-        let root_hmac_digest = self.hmac_root_node(node_data)?;
+        let digest_len = self.auth_tree_digest_len as usize;
+        debug_assert!(node_data.len() >= digest_len << self.digests_per_node_log2);
+        let root_hmac_digest = self.hmac_root_node(
+            node_data
+                .chunks_exact(digest_len)
+                .take(1usize << self.digests_per_node_log2),
+        )?;
         if ct_cmp::ct_bytes_eq(&root_hmac_digest, &self.auth_hmac_digest).unwrap() != 0 {
             Ok(())
         } else {
@@ -268,33 +791,46 @@ impl<ST: sync_types::SyncTypes, C: chip::NVChip> AuthTree<ST, C> {
         }
     }
 
-    fn digest_descendant_node(&self, node_data: &[u8]) -> Result<vec::Vec<u8>, error::NVError> {
-        debug_assert_eq!(node_data.len(), self.auth_tree_node_size());
+    fn digest_descendant_node<'a, DEI: Iterator<Item = &'a [u8]>>(
+        &self,
+        digest_entries_iterator: DEI,
+    ) -> Result<vec::Vec<u8>, error::NVError> {
         let digest_len = self.auth_tree_digest_len as usize;
         let mut node_digest = utils::try_alloc_vec(digest_len)?;
         let mut h = hash::HashInstance::new(self.auth_tree_hash_alg);
-        h.update(io_slices::IoSlices::new(&mut [
-            Some(slice::from_ref(
-                &(AuthSubjectDataPrefix::AuthTreeDescendantNode as u8),
-            )),
-            Some(node_data),
-        ]));
+        h.update(io_slices::IoSlices::new(&mut [Some(slice::from_ref(
+            &(AuthSubjectDataPrefix::AuthTreeDescendantNode as u8),
+        ))]));
+        for digest_entry in digest_entries_iterator {
+            debug_assert_eq!(digest_entry.len(), digest_len);
+            h.update(io_slices::IoSlices::new(&mut [Some(digest_entry)]));
+        }
         h.finalize_into(&mut node_digest);
         Ok(node_digest)
     }
 
     fn authenticate_descendant_node(
         &self,
-        node_id: &AuthTreeNodeCacheId,
+        node_id: &AuthTreeNodeId,
         node_data: &[u8],
         parent_node: &AuthTreeNode,
     ) -> Result<(), error::NVError> {
-        let node_digest = self.digest_descendant_node(node_data)?;
         let digest_len = self.auth_tree_digest_len as usize;
-        let entry_in_parent = ((node_id.covered_auth_tree_data_blocks_begin
-            >> (node_id.level * self.digests_per_node_log2))
-            & u64::trailing_bits_mask(self.digests_per_node_log2 as u32))
-            as usize;
+        debug_assert!(node_data.len() >= digest_len << self.digests_per_node_log2);
+        let node_digest = self.digest_descendant_node(
+            node_data
+                .chunks_exact(digest_len)
+                .take(1usize << self.digests_per_node_log2),
+        )?;
+        let level_covered_index_mask_bits =
+            ((node_id.level + 1) * self.digests_per_node_log2) as u32;
+        let entry_in_parent = if level_covered_index_mask_bits < u64::BITS {
+            ((u64::from(node_id.covered_auth_tree_data_blocks_begin)
+                >> level_covered_index_mask_bits)
+                & u64::trailing_bits_mask(self.digests_per_node_log2 as u32)) as usize
+        } else {
+            0
+        };
         let expected_node_digest_begin = entry_in_parent * digest_len;
         let expected_node_digest =
             &parent_node.data[expected_node_digest_begin..expected_node_digest_begin + digest_len];
@@ -339,18 +875,18 @@ impl<ST: sync_types::SyncTypes, C: chip::NVChip> AuthTree<ST, C> {
 
     fn authenticate_data_block<'a, ABI: Iterator<Item = Option<&'a [u8]>>>(
         &self,
-        data_block_begin: layout::PhysicalAllocBlockIndex,
+        auth_tree_data_block_index: AuthTreeDataAllocBlockIndex,
         mut data_block_allocation_blocks_iter: ABI,
-        parent_node: &AuthTreeNode,
+        leaf_node: &AuthTreeNode,
     ) -> Result<ABI, error::NVError> {
         let block_digest = self.digest_data_block(&mut data_block_allocation_blocks_iter)?;
         let digest_len = self.auth_tree_digest_len as usize;
-        let entry_in_parent =
-            ((u64::from(data_block_begin) >> self.auth_tree_data_block_allocation_blocks_log2)
-                & u64::trailing_bits_mask(self.digests_per_node_log2 as u32)) as usize;
-        let expected_block_digest_begin = entry_in_parent * digest_len;
-        let expected_block_digest = &parent_node.data
-            [expected_block_digest_begin..expected_block_digest_begin + digest_len];
+        let entry_in_leaf_node = (u64::from(auth_tree_data_block_index)
+            & u64::trailing_bits_mask(self.digests_per_node_log2 as u32))
+            as usize;
+        let expected_block_digest_begin = entry_in_leaf_node * digest_len;
+        let expected_block_digest =
+            &leaf_node.data[expected_block_digest_begin..expected_block_digest_begin + digest_len];
         if ct_cmp::ct_bytes_eq(&block_digest, expected_block_digest).unwrap() != 0 {
             Ok(data_block_allocation_blocks_iter)
         } else {
@@ -365,9 +901,20 @@ type AuthTreeWriteLock<ST, C> = asynchronous::AsyncRwLockWriteGuard<ST, AuthTree
 
 #[derive(Clone, Copy)]
 struct AuthTreePath {
-    node_id: AuthTreeNodeCacheId,
+    node_id: AuthTreeNodeId,
     auth_tree_levels: u8,
     digests_per_node_log2: u8,
+}
+
+impl cache::CacheKeys<AuthTreeNodeId> for AuthTreePath {
+    type Iterator<'a> = AuthTreePathNodesIterator<'a>;
+
+    fn iter(&self) -> Self::Iterator<'_> {
+        AuthTreePathNodesIterator {
+            path: self,
+            level: self.node_id.level,
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -377,7 +924,7 @@ struct AuthTreePathNodesIterator<'a> {
 }
 
 impl<'a> Iterator for AuthTreePathNodesIterator<'a> {
-    type Item = AuthTreeNodeCacheId;
+    type Item = AuthTreeNodeId;
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.level == self.path.auth_tree_levels {
@@ -386,24 +933,11 @@ impl<'a> Iterator for AuthTreePathNodesIterator<'a> {
         let level = self.level;
         self.level += 1;
 
-        let covered_auth_tree_data_blocks_begin =
-            self.path.node_id.covered_auth_tree_data_blocks_begin
-                & !u64::trailing_bits_mask((level * self.path.digests_per_node_log2) as u32);
-        Some(AuthTreeNodeCacheId {
-            covered_auth_tree_data_blocks_begin,
+        Some(AuthTreeNodeId::new(
+            self.path.node_id.covered_auth_tree_data_blocks_begin,
             level,
-        })
-    }
-}
-
-impl cache::CacheKeys<AuthTreeNodeCacheId> for AuthTreePath {
-    type Iterator<'a> = AuthTreePathNodesIterator<'a>;
-
-    fn iter(&self) -> Self::Iterator<'_> {
-        AuthTreePathNodesIterator {
-            path: self,
-            level: self.node_id.level,
-        }
+            self.path.digests_per_node_log2,
+        ))
     }
 }
 
@@ -444,20 +978,19 @@ enum AuthTreeNodeLoadFuture<
 > {
     AcquireCacheReservations {
         tree_lock: Option<TL>,
-        auth_tree_node_id: AuthTreeNodeCacheId,
+        auth_tree_node_id: AuthTreeNodeId,
         reserve_cache_slots_fut: cache::CacheReserveSlotsFuture<
             ST,
-            AuthTreeNodeCacheId,
+            AuthTreeNodeId,
             AuthTreeNode,
-            AuthTreeNodeCacheId,
+            AuthTreeNodeId,
             AuthTreePath,
         >,
     },
     ReadAndVerifyBranchNodes {
         tree_lock: Option<TL>,
-        auth_tree_node_id: AuthTreeNodeCacheId,
-        cache_reservations:
-            vec::Vec<cache::CacheSlotReservation<ST, AuthTreeNodeCacheId, AuthTreeNode>>,
+        auth_tree_node_id: AuthTreeNodeId,
+        cache_reservations: vec::Vec<cache::CacheSlotReservation<ST, AuthTreeNodeId, AuthTreeNode>>,
         current_level: u8,
         node_read_fut: C::ReadFuture<AuthTreeNodeNvReadRequest>,
     },
@@ -472,7 +1005,7 @@ impl<
 {
     fn new(
         tree_lock: TL,
-        auth_tree_node_id: AuthTreeNodeCacheId,
+        auth_tree_node_id: AuthTreeNodeId,
     ) -> Result<Self, (TL, interface::TpmErr)> {
         let path = AuthTreePath {
             node_id: auth_tree_node_id,
@@ -492,11 +1025,11 @@ impl<
 
     fn submit_read_node(
         tree: &AuthTree<ST, C>,
-        auth_tree_node_id: &AuthTreeNodeCacheId,
+        auth_tree_node_id: &AuthTreeNodeId,
         current_level: u8,
     ) -> Result<C::ReadFuture<AuthTreeNodeNvReadRequest>, error::NVError> {
         let dst_buf = utils::try_alloc_vec(tree.auth_tree_node_size())?;
-        let node_id = AuthTreeNodeCacheId::new(
+        let node_id = AuthTreeNodeId::new(
             auth_tree_node_id.covered_auth_tree_data_blocks_begin,
             current_level,
             tree.digests_per_node_log2,
@@ -515,13 +1048,10 @@ impl<
 {
     type Output = (
         TL,
-        Result<cache::CacheSlotReservation<ST, AuthTreeNodeCacheId, AuthTreeNode>, error::NVError>,
+        Result<cache::CacheSlotReservation<ST, AuthTreeNodeId, AuthTreeNode>, error::NVError>,
     );
 
-    fn poll(
-        mut self: std::pin::Pin<&mut Self>,
-        cx: &mut task::Context<'_>,
-    ) -> task::Poll<Self::Output> {
+    fn poll(mut self: pin::Pin<&mut Self>, cx: &mut task::Context<'_>) -> task::Poll<Self::Output> {
         loop {
             match self.deref_mut() {
                 Self::AcquireCacheReservations {
@@ -544,8 +1074,8 @@ impl<
                     let auth_tree_node_id = *auth_tree_node_id;
                     *self = Self::Done;
 
-                    // Got the cache slot reservations for all nodes up to (including) the
-                    // root. Check what's already there.
+                    // Got the cache slot reservations for all nodes up to
+                    // (including) the root. Check what's already there.
                     let first_cached_index =
                         cache_reservations.iter().position(|r| r.lock().is_some());
                     if let Some(0) = first_cached_index {
@@ -553,8 +1083,9 @@ impl<
                         let cache_reservation = cache_reservations.pop().unwrap();
                         return task::Poll::Ready((tree_lock, Ok(cache_reservation)));
                     }
-                    // Submit a request for reading the topmost Authentication Tree node not yet in
-                    // the cache and transition the future to the next state.
+                    // Submit a request for reading the topmost
+                    // Authentication Tree node not yet in the cache and
+                    // transition the future to the next state.
                     let current_level = match first_cached_index {
                         Some(first_cached_index) => {
                             cache_reservations.truncate(first_cached_index + 1);
@@ -597,15 +1128,15 @@ impl<
                         }
                     };
 
-                    // Got the current_level node's data from the backing storage. Verify it using
-                    // either the already verified parent or, if the root, by
-                    // the HMAC.
+                    // Got the current_level node's data from the backing
+                    // storage. Verify it using either the already verified
+                    // parent or, if the root, by the HMAC.
                     let AuthTreeNodeNvReadRequest {
                         dst_buf: node_data,
                         io_region: _,
                     } = node_read_request;
                     if *current_level != tree_lock.auth_tree_levels - 1 {
-                        let node_id = AuthTreeNodeCacheId::new(
+                        let node_id = AuthTreeNodeId::new(
                             auth_tree_node_id.covered_auth_tree_data_blocks_begin,
                             *current_level,
                             tree_lock.digests_per_node_log2,
@@ -646,9 +1177,9 @@ impl<
                     cache_reservations
                         .truncate((*current_level - auth_tree_node_id.level + 1) as usize);
 
-                    // Either move down to the next node and continue the verification chain or,
-                    // once the bottom/requested level has been reached, return
-                    // the result.
+                    // Either move down to the next node and continue the
+                    // verification chain or, once the bottom/requested level
+                    // has been reached, return the result.
                     if *current_level == auth_tree_node_id.level {
                         let cache_reservation = cache_reservations.pop().unwrap();
                         *self = Self::Done;
@@ -675,39 +1206,520 @@ impl<
     }
 }
 
-pub trait AuthTreeDataBlockUpdate {
-    type AllocationBlockIterator<'a>: Iterator<Item = Option<&'a [u8]>>
-    where
-        Self: 'a;
-
-    fn data_block_allocation_blocks_iter(&self) -> Self::AllocationBlockIterator<'_>;
+struct AuthTreePendingNodeEntryUpdate {
+    node_entry_index: usize,
+    updated_digest: vec::Vec<u8>,
 }
 
-pub trait AuthTreeDataBlocksUpdates {
-    type AuthTreeDataBlockUpdate: AuthTreeDataBlockUpdate;
+struct AuthTreePendingNodeUpdates {
+    node_id: AuthTreeNodeId,
+    updated_entries: vec::Vec<AuthTreePendingNodeEntryUpdate>,
+}
 
-    type PrepareAuthTreeDataBlockUpdate: future::Future<
-            Output = Result<
-                (
-                    layout::PhysicalAllocBlockIndex,
-                    Self::AuthTreeDataBlockUpdate,
-                ),
-                error::NVError,
-            >,
+struct AuthTreeDataBlockUpdate {
+    data_block_index: AuthTreeDataBlockIndex,
+    data_block_digest: vec::Vec<u8>,
+}
+
+trait AuthTreeDataBlocksUpdatesIterator<ST: sync_types::SyncTypes, C: chip::NVChip> {
+    type DigestNextUpdatedAuthTreeDataBlockFuture: future::Future<
+            Output = (
+                asynchronous::AsyncRwLockWriteGuard<ST, AuthTree<ST, C>>,
+                Result<Option<AuthTreeDataBlockUpdate>, error::NVError>,
+            ),
         > + marker::Unpin;
 
-    fn next_data_block_update(
+    fn next(
         &mut self,
+        tree_lock: asynchronous::AsyncRwLockWriteGuard<ST, AuthTree<ST, C>>,
     ) -> Result<
-        Option<(
-            layout::PhysicalAllocBlockIndex,
-            Self::PrepareAuthTreeDataBlockUpdate,
-        )>,
-        error::NVError,
+        Self::DigestNextUpdatedAuthTreeDataBlockFuture,
+        (
+            asynchronous::AsyncRwLockWriteGuard<ST, AuthTree<ST, C>>,
+            error::NVError,
+        ),
     >;
 }
 
-// pub enum AuthTreeUpdateFuture<ST: sync_types::SyncTypes, C: chip::NVChip> {}
+enum AuthTreeUpdateFutureState<
+    ST: sync_types::SyncTypes,
+    C: chip::NVChip,
+    DUI: AuthTreeDataBlocksUpdatesIterator<ST, C> + Unpin,
+> {
+    DigestNextUpdatedAuthTreeDataBlock {
+        next_updated_data_block_fut: DUI::DigestNextUpdatedAuthTreeDataBlockFuture,
+    },
+    LoadAuthTreeNode {
+        load_tree_node_fut:
+            AuthTreeNodeLoadFuture<ST, C, asynchronous::AsyncRwLockWriteGuard<ST, AuthTree<ST, C>>>,
+        next_updated_data_block: Option<AuthTreeDataBlockUpdate>,
+    },
+    Done,
+}
+
+struct AuthTreeUpdateFuture<
+    ST: sync_types::SyncTypes,
+    C: chip::NVChip,
+    DUI: AuthTreeDataBlocksUpdatesIterator<ST, C> + Unpin,
+> {
+    data_block_updates_iter: DUI,
+    pending_nodes_updates: vec::Vec<AuthTreePendingNodeUpdates>,
+    /// Current position in the tree, represented as a sequence of indicies into
+    /// [`pending_nodes_updates`](Self::pending_nodes_updates), sorted by
+    /// distance from the root.
+    cursor: vec::Vec<usize>,
+    state: AuthTreeUpdateFutureState<ST, C, DUI>,
+}
+
+impl<
+        ST: sync_types::SyncTypes,
+        C: chip::NVChip,
+        DUI: AuthTreeDataBlocksUpdatesIterator<ST, C> + Unpin,
+    > AuthTreeUpdateFuture<ST, C, DUI>
+{
+    fn new(
+        tree_lock: asynchronous::AsyncRwLockWriteGuard<ST, AuthTree<ST, C>>,
+        mut data_block_updates_iter: DUI,
+    ) -> Result<
+        Self,
+        (
+            asynchronous::AsyncRwLockWriteGuard<ST, AuthTree<ST, C>>,
+            error::NVError,
+        ),
+    > {
+        let next_updated_data_block_fut = match data_block_updates_iter.next(tree_lock) {
+            Ok(next_updated_data_block_fut) => next_updated_data_block_fut,
+            Err((tree_lock, e)) => {
+                return Err((tree_lock, e.into()));
+            }
+        };
+        Ok(Self {
+            data_block_updates_iter,
+            pending_nodes_updates: vec::Vec::new(),
+            cursor: vec::Vec::new(),
+            state: AuthTreeUpdateFutureState::DigestNextUpdatedAuthTreeDataBlock {
+                next_updated_data_block_fut,
+            },
+        })
+    }
+
+    fn push_cursor_to_leaf(
+        &mut self,
+        data_block_index: AuthTreeDataBlockIndex,
+        digests_per_node_log2: u8,
+        auth_tree_levels: u8,
+    ) -> Result<(), interface::TpmErr> {
+        let mut level = match self.cursor.last() {
+            Some(bottom) => {
+                debug_assert!(
+                    self.pending_nodes_updates[*bottom]
+                        .node_id
+                        .last_covered_auth_tree_data_block(digests_per_node_log2)
+                        >= data_block_index
+                );
+                debug_assert!(self.pending_nodes_updates[*bottom].node_id.level > 0);
+                self.pending_nodes_updates[*bottom].node_id.level
+            }
+            None => auth_tree_levels,
+        };
+        if self.cursor.capacity() < auth_tree_levels as usize {
+            self.cursor
+                .try_reserve_exact(auth_tree_levels as usize - self.cursor.capacity())
+                .map_err(|_| tpm_err_rc!(MEMORY))?;
+        }
+        self.pending_nodes_updates
+            .try_reserve_exact(level as usize)
+            .map_err(|_| tpm_err_rc!(MEMORY))?;
+        while level > 0 {
+            level -= 1;
+            self.cursor.push(self.pending_nodes_updates.len());
+            self.pending_nodes_updates.push(AuthTreePendingNodeUpdates {
+                node_id: AuthTreeNodeId::new(data_block_index, level, digests_per_node_log2),
+                updated_entries: vec::Vec::new(),
+            });
+        }
+
+        Ok(())
+    }
+
+    fn pending_bottom_node_updates_push(
+        &mut self,
+        child_covered_auth_tree_data_blocks_begin: AuthTreeDataBlockIndex,
+        child_digest: vec::Vec<u8>,
+        digests_per_node_log2: u8,
+    ) -> Result<(), interface::TpmErr> {
+        let bottom = self.cursor.last().unwrap();
+        let bottom_node_pending_updates = &mut self.pending_nodes_updates[*bottom];
+        debug_assert!(
+            bottom_node_pending_updates
+                .node_id
+                .covered_auth_tree_data_blocks_begin
+                <= child_covered_auth_tree_data_blocks_begin
+        );
+        debug_assert!(
+            bottom_node_pending_updates
+                .node_id
+                .last_covered_auth_tree_data_block(digests_per_node_log2)
+                < child_covered_auth_tree_data_blocks_begin
+        );
+        let level = bottom_node_pending_updates.node_id.level;
+        debug_assert!(((level * digests_per_node_log2) as u32) < u64::BITS);
+        let entry_index_in_node = ((u64::from(child_covered_auth_tree_data_blocks_begin)
+            >> (level * digests_per_node_log2))
+            & u64::trailing_bits_mask(digests_per_node_log2 as u32))
+            as usize;
+        bottom_node_pending_updates
+            .updated_entries
+            .try_reserve_exact(1)
+            .map_err(|_| tpm_err_rc!(MEMORY))?;
+        bottom_node_pending_updates
+            .updated_entries
+            .push(AuthTreePendingNodeEntryUpdate {
+                node_entry_index: entry_index_in_node,
+                updated_digest: child_digest,
+            });
+        Ok(())
+    }
+}
+
+impl<
+        ST: sync_types::SyncTypes,
+        C: chip::NVChip,
+        U: AuthTreeDataBlocksUpdatesIterator<ST, C> + Unpin,
+    > future::Future for AuthTreeUpdateFuture<ST, C, U>
+{
+    type Output = (
+        asynchronous::AsyncRwLockWriteGuard<ST, AuthTree<ST, C>>,
+        Result<(vec::Vec<u8>, vec::Vec<AuthTreePendingNodeUpdates>), error::NVError>,
+    );
+
+    fn poll(mut self: pin::Pin<&mut Self>, cx: &mut task::Context<'_>) -> task::Poll<Self::Output> {
+        'poll_inner_fut: loop {
+            // Poll either of the two possible inner futures, code common to subsequent
+            // processing will follow below.
+            let state = &mut self.state;
+            let (tree_lock, mut next_updated_data_block) = match state {
+                AuthTreeUpdateFutureState::DigestNextUpdatedAuthTreeDataBlock {
+                    next_updated_data_block_fut,
+                } => {
+                    let (tree_lock, next_updated_data_block) =
+                        match pin::Pin::new(next_updated_data_block_fut).poll(cx) {
+                            task::Poll::Ready((tree_lock, Ok(next_updated_data_block))) => {
+                                (tree_lock, next_updated_data_block)
+                            }
+                            task::Poll::Ready((tree_lock, Err(e))) => {
+                                self.state = AuthTreeUpdateFutureState::Done;
+                                return task::Poll::Ready((tree_lock, Err(e)));
+                            }
+                            task::Poll::Pending => return task::Poll::Pending,
+                        };
+                    (tree_lock, next_updated_data_block)
+                }
+                AuthTreeUpdateFutureState::LoadAuthTreeNode {
+                    load_tree_node_fut,
+                    next_updated_data_block,
+                } => {
+                    // The cursor is currently being moved up (because the next_updated_data_block
+                    // is past the bottom node's covered range) and the original
+                    // contents of the current inner node, which hasn't got all
+                    // of its entries updated, got loaded and authenticated. Pop
+                    // it and digest it into the associated parent entry, if
+                    // any.
+                    let (tree_lock, node) = match pin::Pin::new(load_tree_node_fut).poll(cx) {
+                        task::Poll::Ready((tree_lock, Ok(node))) => (tree_lock, node),
+                        task::Poll::Ready((tree_lock, Err(e))) => {
+                            self.state = AuthTreeUpdateFutureState::Done;
+                            return task::Poll::Ready((tree_lock, Err(e)));
+                        }
+                        task::Poll::Pending => return task::Poll::Pending,
+                    };
+
+                    let next_updated_data_block = next_updated_data_block.take();
+                    self.state = AuthTreeUpdateFutureState::Done;
+                    let popped = self.cursor.pop().unwrap();
+                    let popped_is_root = self.cursor.is_empty();
+                    let popped_node_pending_updates = &mut self.pending_nodes_updates[popped];
+                    let node = node.lock();
+                    let popped_node_updated_digests = AuthTreeNodeUpdatedDigestsIterator::new(
+                        Some(&node.as_ref().unwrap().data),
+                        &popped_node_pending_updates.updated_entries,
+                        tree_lock.auth_tree_digest_len,
+                        tree_lock.digests_per_node_log2,
+                    );
+                    if !popped_is_root {
+                        // Popped node is not the root, digest its updated contents into the
+                        // associated parent entry.
+                        let node_digest =
+                            match tree_lock.digest_descendant_node(popped_node_updated_digests) {
+                                Ok(node_digest) => node_digest,
+                                Err(e) => {
+                                    return task::Poll::Ready((tree_lock, Err(e)));
+                                }
+                            };
+                        let popped_node_id = popped_node_pending_updates.node_id;
+                        if let Err(e) = self.pending_bottom_node_updates_push(
+                            popped_node_id.covered_auth_tree_data_blocks_begin,
+                            node_digest,
+                            tree_lock.digests_per_node_log2,
+                        ) {
+                            return task::Poll::Ready((tree_lock, Err(e.into())));
+                        }
+                    } else {
+                        // Popped node is the root, HMAC its updated contents and be done.
+                        match tree_lock.hmac_root_node(popped_node_updated_digests) {
+                            Ok(root_hmac) => {
+                                let pending_nodes_updates =
+                                    mem::replace(&mut self.pending_nodes_updates, vec::Vec::new());
+                                return task::Poll::Ready((
+                                    tree_lock,
+                                    Ok((root_hmac, pending_nodes_updates)),
+                                ));
+                            }
+                            Err(e) => {
+                                return task::Poll::Ready((tree_lock, Err(e)));
+                            }
+                        };
+                    }
+                    (tree_lock, next_updated_data_block)
+                }
+                AuthTreeUpdateFutureState::Done => unreachable!(),
+            };
+
+            // Figure out what to do next, based on next_updated_data_block,
+            // the cursor position and the bottom node's covered data range:
+            // - if next_updated_data_block is None, all that is left to do is to move the
+            //   cursor all the way up to the root, digesting child nodes into their
+            //   associated parent entries in the course.
+            // - if the next_updated_data_block is located past the cursor's bottom node's
+            //   covered data range, the cursor needs to get moved up until
+            //   next_updated_data_block is in range again, digesting child nodes into
+            //   parent entries on the go,
+            // - if the next_updated_data_block is in the cursor's bottom node's covered
+            //   range, the cursor will get moved down all the way to level 0, and the
+            //   next_updated_data_block's associated digest recorded in the corresponding
+            //   leaf slot.
+            self.state = AuthTreeUpdateFutureState::Done;
+            if self.cursor.is_empty() {
+                // Cursor is still empty, it's the first updated
+                // data block.
+                match &next_updated_data_block {
+                    None => {
+                        // There is no change at all, copy the existing root hmac and return.
+                        let mut root_hmac = vec::Vec::new();
+                        if let Err(_) = root_hmac.try_reserve(tree_lock.auth_hmac_digest.len()) {
+                            return task::Poll::Ready((tree_lock, Err(tpm_err_rc!(MEMORY).into())));
+                        }
+                        root_hmac.copy_from_slice(&tree_lock.auth_hmac_digest);
+                        return task::Poll::Ready((
+                            tree_lock,
+                            Ok((
+                                root_hmac,
+                                mem::replace(&mut self.pending_nodes_updates, vec::Vec::new()),
+                            )),
+                        ));
+                    }
+                    Some(next_updated_data_block) => {
+                        if let Err(e) = self.push_cursor_to_leaf(
+                            next_updated_data_block.data_block_index,
+                            tree_lock.digests_per_node_log2,
+                            tree_lock.auth_tree_levels,
+                        ) {
+                            return task::Poll::Ready((tree_lock, Err(e.into())));
+                        }
+                    }
+                }
+            }
+
+            loop {
+                let bottom = self.cursor.last().unwrap();
+                let bottom_node_pending_updates = &self.pending_nodes_updates[*bottom];
+                if next_updated_data_block
+                    .as_ref()
+                    .map(|next_updated_data_block| {
+                        next_updated_data_block.data_block_index
+                            <= bottom_node_pending_updates
+                                .node_id
+                                .last_covered_auth_tree_data_block(tree_lock.digests_per_node_log2)
+                    })
+                    .unwrap_or(false)
+                {
+                    let next_updated_data_block = next_updated_data_block.take().unwrap();
+                    // next_updated_data_block is in the cursor's bottom node's covered range.
+                    // Record its digest in the corresponding leaf node, potentially after
+                    // moving the cursor all the way down to level 0.
+                    if self.cursor.len() != tree_lock.auth_tree_levels as usize {
+                        if let Err(e) = self.push_cursor_to_leaf(
+                            next_updated_data_block.data_block_index,
+                            tree_lock.digests_per_node_log2,
+                            tree_lock.auth_tree_levels,
+                        ) {
+                            return task::Poll::Ready((tree_lock, Err(e.into())));
+                        }
+                    }
+                    if let Err(e) = self.pending_bottom_node_updates_push(
+                        next_updated_data_block.data_block_index,
+                        next_updated_data_block.data_block_digest,
+                        tree_lock.digests_per_node_log2,
+                    ) {
+                        return task::Poll::Ready((tree_lock, Err(e.into())));
+                    }
+
+                    // Obtain the next updated data block location and digest.
+                    let next_updated_data_block_fut =
+                        match self.data_block_updates_iter.next(tree_lock) {
+                            Ok(next_updated_data_block_fut) => next_updated_data_block_fut,
+                            Err((tree_lock, e)) => {
+                                return task::Poll::Ready((tree_lock, Err(e.into())));
+                            }
+                        };
+                    self.state = AuthTreeUpdateFutureState::DigestNextUpdatedAuthTreeDataBlock {
+                        next_updated_data_block_fut,
+                    };
+                    continue 'poll_inner_fut;
+                }
+
+                // At this point, next_updated_data_block is either None or past the cursor's
+                // bottom node's covered range. In either case, the cursor needs to get moved
+                // up, digesting nodes into their associated parent entries, if any, in the
+                // course.
+                if bottom_node_pending_updates.updated_entries.len()
+                    == 1usize << tree_lock.digests_per_node_log2
+                {
+                    // All of the node's entries got updated, its original contents won't be
+                    // needed for computing the updated digest.
+                    let popped = *bottom;
+                    self.cursor.pop();
+                    let popped_node_pending_updates = &self.pending_nodes_updates[popped];
+                    let popped_node_updated_digests = AuthTreeNodeUpdatedDigestsIterator::new(
+                        None,
+                        &popped_node_pending_updates.updated_entries,
+                        tree_lock.auth_tree_digest_len,
+                        tree_lock.digests_per_node_log2,
+                    );
+                    if !self.cursor.is_empty() {
+                        // At a descendant node, compute the digest and record it at the associated
+                        // parent entry.
+                        let node_digest =
+                            match tree_lock.digest_descendant_node(popped_node_updated_digests) {
+                                Ok(node_digest) => node_digest,
+                                Err(e) => {
+                                    return task::Poll::Ready((tree_lock, Err(e)));
+                                }
+                            };
+                        let popped_node_id = popped_node_pending_updates.node_id;
+                        if let Err(e) = self.pending_bottom_node_updates_push(
+                            popped_node_id.covered_auth_tree_data_blocks_begin,
+                            node_digest,
+                            tree_lock.digests_per_node_log2,
+                        ) {
+                            return task::Poll::Ready((tree_lock, Err(e.into())));
+                        }
+                    } else {
+                        // At the root, compute the HMAC over the root node and be done.
+                        match tree_lock.hmac_root_node(popped_node_updated_digests) {
+                            Ok(root_hmac) => {
+                                let pending_nodes_updates =
+                                    mem::replace(&mut self.pending_nodes_updates, vec::Vec::new());
+                                return task::Poll::Ready((
+                                    tree_lock,
+                                    Ok((root_hmac, pending_nodes_updates)),
+                                ));
+                            }
+                            Err(e) => {
+                                return task::Poll::Ready((tree_lock, Err(e)));
+                            }
+                        };
+                    }
+                } else {
+                    // Only part of the node's entries got updated, its original contents will be
+                    // needed for computing the updated digest. Load and authenticate the node's
+                    // contents.
+                    let load_tree_node_fut = match AuthTreeNodeLoadFuture::new(
+                        tree_lock,
+                        bottom_node_pending_updates.node_id,
+                    ) {
+                        Ok(load_tree_node_fut) => load_tree_node_fut,
+                        Err((tree_lock, e)) => {
+                            return task::Poll::Ready((tree_lock, Err(e.into())));
+                        }
+                    };
+                    self.state = AuthTreeUpdateFutureState::LoadAuthTreeNode {
+                        load_tree_node_fut,
+                        next_updated_data_block,
+                    };
+                    continue 'poll_inner_fut;
+                }
+            }
+        }
+    }
+}
+
+struct AuthTreeNodeUpdatedDigestsIterator<'a> {
+    original_node_data: Option<&'a [u8]>,
+    updated_entries: &'a [AuthTreePendingNodeEntryUpdate],
+    next_node_entry_index: usize,
+    next_updated_entries_index: usize,
+    digest_len: u8,
+    digests_per_node_log2: u8,
+}
+
+impl<'a> AuthTreeNodeUpdatedDigestsIterator<'a> {
+    fn new(
+        original_node_data: Option<&'a [u8]>,
+        updated_entries: &'a [AuthTreePendingNodeEntryUpdate],
+        digest_len: u8,
+        digests_per_node_log2: u8,
+    ) -> Self {
+        match original_node_data {
+            Some(original_node_data) => {
+                debug_assert!(
+                    original_node_data.len() >= (digest_len as usize) << digests_per_node_log2
+                );
+            }
+            None => {
+                debug_assert_eq!(updated_entries.len(), 1usize << digests_per_node_log2);
+            }
+        }
+
+        Self {
+            original_node_data,
+            updated_entries,
+            next_node_entry_index: 0,
+            next_updated_entries_index: 0,
+            digest_len,
+            digests_per_node_log2,
+        }
+    }
+}
+
+impl<'a> Iterator for AuthTreeNodeUpdatedDigestsIterator<'a> {
+    type Item = &'a [u8];
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.next_node_entry_index == 1usize << self.digests_per_node_log2 {
+            return None;
+        }
+
+        let node_entry_index = self.next_node_entry_index;
+        self.next_node_entry_index += 1;
+        if self.next_updated_entries_index < self.updated_entries.len()
+            && node_entry_index
+                == self.updated_entries[self.next_updated_entries_index].node_entry_index
+        {
+            let updated_entry_index = self.next_updated_entries_index;
+            self.next_updated_entries_index += 1;
+            Some(&self.updated_entries[updated_entry_index].updated_digest)
+        } else {
+            Some(
+                self.original_node_data
+                    .unwrap()
+                    .chunks(self.digest_len as usize)
+                    .nth(node_entry_index)
+                    .unwrap(),
+            )
+        }
+    }
+}
 
 fn auth_subtree_node_count(
     subtree_root_level: u8,
@@ -1381,30 +2393,8 @@ fn test_auth_tree_node_count_to_auth_tree_data_block_count() {
     }
 }
 
-// fn auth_tree_node_count_to_image_allocation_blocks(
-//     auth_tree_node_count: u64,
-//     auth_tree_levels: u8,
-//     digests_per_node_log2: u8,
-//     digests_per_node_minus_one_inv_mod_u64: u64,
-//     auth_tree_data_block_allocation_blocks_log2: u8,
-// ) -> Result<u64, error::NVError> { debug_assert_eq!( auth_tree_levels,
-//   auth_tree_node_count_to_auth_tree_levels(auth_tree_node_count,
-//   digests_per_node_log2) .unwrap() ); let auth_tree_data_block_count =
-//   auth_tree_node_count_to_auth_tree_data_block_count( auth_tree_node_count,
-//   auth_tree_levels, digests_per_node_log2,
-//   digests_per_node_minus_one_inv_mod_u64, )?;
-
-//     if auth_tree_data_block_allocation_blocks_log2 != 0
-//         && auth_tree_data_block_count
-//             >= 1u64 << (u64::BITS as u8 -
-// auth_tree_data_block_allocation_blocks_log2)     {
-//         return Err(error::NVError::InvalidAuthTreeDimensions);
-//     }
-//     Ok(auth_tree_data_block_count <<
-// auth_tree_data_block_allocation_blocks_log2) }
-
-fn phys_auth_tree_data_block_index_to_auth_tree_node_entry(
-    auth_tree_data_block_index: u64,
+fn auth_tree_data_block_index_to_auth_tree_node_entry(
+    auth_tree_data_block_index: AuthTreeDataBlockIndex,
     auth_tree_node_level: u8,
     auth_tree_levels: u8,
     digests_per_node_log2: u8,
@@ -1414,7 +2404,8 @@ fn phys_auth_tree_data_block_index_to_auth_tree_node_entry(
     debug_assert!(auth_tree_node_level < auth_tree_levels);
 
     let child_entry_index_mask = u64::trailing_bits_mask(digests_per_node_log2 as u32);
-    let mut index = auth_tree_data_block_index >> (auth_tree_node_level * digests_per_node_log2);
+    let mut index =
+        u64::from(auth_tree_data_block_index) >> (auth_tree_node_level * digests_per_node_log2);
     let entry_in_node_index = (index & child_entry_index_mask) as usize;
     if auth_tree_node_level + 1 == auth_tree_levels {
         return (0, entry_in_node_index);
@@ -1451,24 +2442,4 @@ fn phys_auth_tree_data_block_index_to_auth_tree_node_entry(
             (entry_subtree_node_count << digests_per_node_log2).wrapping_add(1);
     }
     (node_dfs_pre_index, entry_in_node_index)
-}
-
-fn phys_allocation_block_index_to_auth_tree_node_entry(
-    phys_allocation_block_index: layout::PhysicalAllocBlockIndex,
-    auth_tree_node_level: u8,
-    auth_tree_levels: u8,
-    digests_per_node_log2: u8,
-    digests_per_node_minus_one_inv_mod_u64: u64,
-    auth_tree_data_block_allocation_blocks_log2: u8,
-) -> (u64, usize) {
-    let phys_allocation_block_index = u64::from(phys_allocation_block_index);
-    let auth_tree_data_block_index =
-        phys_allocation_block_index >> auth_tree_data_block_allocation_blocks_log2;
-    phys_auth_tree_data_block_index_to_auth_tree_node_entry(
-        auth_tree_data_block_index,
-        auth_tree_node_level,
-        auth_tree_levels,
-        digests_per_node_log2,
-        digests_per_node_minus_one_inv_mod_u64,
-    )
 }
