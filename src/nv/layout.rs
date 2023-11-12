@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2023 SUSE LLC
+// Author: Nicolai Stange <nstange@suse.de>
+
 use crate::crypto::symcipher;
 use crate::interface;
 use core::{cmp, convert, marker, ops};

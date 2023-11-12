@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2023 SUSE LLC
+// Author: Nicolai Stange <nstange@suse.de>
+
 extern crate alloc;
 use crate::interface;
 use crate::utils::{self, cfg_zeroize};

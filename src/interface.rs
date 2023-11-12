@@ -151,7 +151,7 @@ impl<'a> PartialEq for TpmBuffer<'a> {
     }
 }
 
-fn unmarshal_u8<'a>(buf: TpmBufferRef<'a>) -> Result<(TpmBufferRef<'a>, u8), TpmErr> {
+pub fn unmarshal_u8<'a>(buf: TpmBufferRef<'a>) -> Result<(TpmBufferRef<'a>, u8), TpmErr> {
     if buf.len() < mem::size_of::<u8>() {
         return Err(TpmErr::Rc(TpmRc::INSUFFICIENT));
     }
@@ -161,7 +161,7 @@ fn unmarshal_u8<'a>(buf: TpmBufferRef<'a>) -> Result<(TpmBufferRef<'a>, u8), Tpm
     Ok((buf, value))
 }
 
-fn unmarshal_i8<'a>(buf: TpmBufferRef<'a>) -> Result<(TpmBufferRef<'a>, i8), TpmErr> {
+pub fn unmarshal_i8<'a>(buf: TpmBufferRef<'a>) -> Result<(TpmBufferRef<'a>, i8), TpmErr> {
     if buf.len() < mem::size_of::<i8>() {
         return Err(TpmErr::Rc(TpmRc::INSUFFICIENT));
     }
@@ -171,7 +171,7 @@ fn unmarshal_i8<'a>(buf: TpmBufferRef<'a>) -> Result<(TpmBufferRef<'a>, i8), Tpm
     Ok((buf, value))
 }
 
-fn unmarshal_u16<'a>(buf: TpmBufferRef<'a>) -> Result<(TpmBufferRef<'a>, u16), TpmErr> {
+pub fn unmarshal_u16<'a>(buf: TpmBufferRef<'a>) -> Result<(TpmBufferRef<'a>, u16), TpmErr> {
     if buf.len() < mem::size_of::<u16>() {
         return Err(TpmErr::Rc(TpmRc::INSUFFICIENT));
     }
@@ -181,7 +181,7 @@ fn unmarshal_u16<'a>(buf: TpmBufferRef<'a>) -> Result<(TpmBufferRef<'a>, u16), T
     Ok((buf, value))
 }
 
-fn unmarshal_i16<'a>(buf: TpmBufferRef<'a>) -> Result<(TpmBufferRef<'a>, i16), TpmErr> {
+pub fn unmarshal_i16<'a>(buf: TpmBufferRef<'a>) -> Result<(TpmBufferRef<'a>, i16), TpmErr> {
     if buf.len() < mem::size_of::<i16>() {
         return Err(TpmErr::Rc(TpmRc::INSUFFICIENT));
     }
@@ -191,7 +191,7 @@ fn unmarshal_i16<'a>(buf: TpmBufferRef<'a>) -> Result<(TpmBufferRef<'a>, i16), T
     Ok((buf, value))
 }
 
-fn unmarshal_u32<'a>(buf: TpmBufferRef<'a>) -> Result<(TpmBufferRef<'a>, u32), TpmErr> {
+pub fn unmarshal_u32<'a>(buf: TpmBufferRef<'a>) -> Result<(TpmBufferRef<'a>, u32), TpmErr> {
     if buf.len() < mem::size_of::<u32>() {
         return Err(TpmErr::Rc(TpmRc::INSUFFICIENT));
     }
@@ -201,7 +201,7 @@ fn unmarshal_u32<'a>(buf: TpmBufferRef<'a>) -> Result<(TpmBufferRef<'a>, u32), T
     Ok((buf, value))
 }
 
-fn unmarshal_i32<'a>(buf: TpmBufferRef<'a>) -> Result<(TpmBufferRef<'a>, i32), TpmErr> {
+pub fn unmarshal_i32<'a>(buf: TpmBufferRef<'a>) -> Result<(TpmBufferRef<'a>, i32), TpmErr> {
     if buf.len() < mem::size_of::<i32>() {
         return Err(TpmErr::Rc(TpmRc::INSUFFICIENT));
     }
@@ -211,7 +211,7 @@ fn unmarshal_i32<'a>(buf: TpmBufferRef<'a>) -> Result<(TpmBufferRef<'a>, i32), T
     Ok((buf, value))
 }
 
-fn unmarshal_u64<'a>(buf: TpmBufferRef<'a>) -> Result<(TpmBufferRef<'a>, u64), TpmErr> {
+pub fn unmarshal_u64<'a>(buf: TpmBufferRef<'a>) -> Result<(TpmBufferRef<'a>, u64), TpmErr> {
     if buf.len() < mem::size_of::<u64>() {
         return Err(TpmErr::Rc(TpmRc::INSUFFICIENT));
     }
@@ -221,7 +221,7 @@ fn unmarshal_u64<'a>(buf: TpmBufferRef<'a>) -> Result<(TpmBufferRef<'a>, u64), T
     Ok((buf, value))
 }
 
-fn unmarshal_i64<'a>(buf: TpmBufferRef<'a>) -> Result<(TpmBufferRef<'a>, i64), TpmErr> {
+pub fn unmarshal_i64<'a>(buf: TpmBufferRef<'a>) -> Result<(TpmBufferRef<'a>, i64), TpmErr> {
     if buf.len() < mem::size_of::<i64>() {
         return Err(TpmErr::Rc(TpmRc::INSUFFICIENT));
     }
@@ -231,56 +231,56 @@ fn unmarshal_i64<'a>(buf: TpmBufferRef<'a>) -> Result<(TpmBufferRef<'a>, i64), T
     Ok((buf, value))
 }
 
-fn marshal_u8<'a>(buf: &mut [u8], value: u8) -> &mut [u8] {
+pub fn marshal_u8<'a>(buf: &mut [u8], value: u8) -> &mut [u8] {
     let (produced, buf) = buf.split_at_mut(mem::size_of::<u8>());
     let marshalled = value.to_be_bytes();
     produced.copy_from_slice(&marshalled);
     buf
 }
 
-fn marshal_i8<'a>(buf: &mut [u8], value: i8) -> &mut [u8] {
+pub fn marshal_i8<'a>(buf: &mut [u8], value: i8) -> &mut [u8] {
     let (produced, buf) = buf.split_at_mut(mem::size_of::<i8>());
     let marshalled = value.to_be_bytes();
     produced.copy_from_slice(&marshalled);
     buf
 }
 
-fn marshal_u16<'a>(buf: &mut [u8], value: u16) -> &mut [u8] {
+pub fn marshal_u16<'a>(buf: &mut [u8], value: u16) -> &mut [u8] {
     let (produced, buf) = buf.split_at_mut(mem::size_of::<u16>());
     let marshalled = value.to_be_bytes();
     produced.copy_from_slice(&marshalled);
     buf
 }
 
-fn marshal_i16<'a>(buf: &mut [u8], value: i16) -> &mut [u8] {
+pub fn marshal_i16<'a>(buf: &mut [u8], value: i16) -> &mut [u8] {
     let (produced, buf) = buf.split_at_mut(mem::size_of::<i16>());
     let marshalled = value.to_be_bytes();
     produced.copy_from_slice(&marshalled);
     buf
 }
 
-fn marshal_u32<'a>(buf: &mut [u8], value: u32) -> &mut [u8] {
+pub fn marshal_u32<'a>(buf: &mut [u8], value: u32) -> &mut [u8] {
     let (produced, buf) = buf.split_at_mut(mem::size_of::<u32>());
     let marshalled = value.to_be_bytes();
     produced.copy_from_slice(&marshalled);
     buf
 }
 
-fn marshal_i32<'a>(buf: &mut [u8], value: i32) -> &mut [u8] {
+pub fn marshal_i32<'a>(buf: &mut [u8], value: i32) -> &mut [u8] {
     let (produced, buf) = buf.split_at_mut(mem::size_of::<i32>());
     let marshalled = value.to_be_bytes();
     produced.copy_from_slice(&marshalled);
     buf
 }
 
-fn marshal_u64<'a>(buf: &mut [u8], value: u64) -> &mut [u8] {
+pub fn marshal_u64<'a>(buf: &mut [u8], value: u64) -> &mut [u8] {
     let (produced, buf) = buf.split_at_mut(mem::size_of::<u64>());
     let marshalled = value.to_be_bytes();
     produced.copy_from_slice(&marshalled);
     buf
 }
 
-fn marshal_i64<'a>(buf: &mut [u8], value: i64) -> &mut [u8] {
+pub fn marshal_i64<'a>(buf: &mut [u8], value: i64) -> &mut [u8] {
     let (produced, buf) = buf.split_at_mut(mem::size_of::<i64>());
     let marshalled = value.to_be_bytes();
     produced.copy_from_slice(&marshalled);
@@ -571,6 +571,16 @@ pub enum TpmiAlgHash {
     Sha3_512 = TpmAlgId::Sha3_512 as u16,
 }
 
+impl TpmiAlgHash {
+    const fn marshalled_size() -> u16 {
+        mem::size_of::<u16>() as u16
+    }
+
+    pub fn marshal<'a>(&self, buf: &'a mut [u8]) -> &'a mut [u8] {
+        marshal_u16(buf, *self as u16)
+    }
+}
+
 impl convert::TryFrom<u16> for TpmiAlgHash {
     type Error = TpmErr;
 
@@ -615,6 +625,16 @@ pub enum TpmiAlgSymObject {
     Camellia = TpmAlgId::Camellia as u16,
 }
 
+impl TpmiAlgSymObject {
+    const fn marshalled_size() -> u16 {
+        mem::size_of::<u16>() as u16
+    }
+
+    pub fn marshal<'a>(&self, buf: &'a mut [u8]) -> &'a mut [u8] {
+        marshal_u16(buf, *self as u16)
+    }
+}
+
 impl convert::TryFrom<u16> for TpmiAlgSymObject {
     type Error = TpmErr;
 
@@ -651,6 +671,16 @@ pub enum TpmiAlgCipherMode {
     Cfb = TpmAlgId::Cfb as u16,
     #[cfg(feature = "ecb")]
     Ecb = TpmAlgId::Ecb as u16,
+}
+
+impl TpmiAlgCipherMode {
+    const fn marshalled_size() -> u16 {
+        mem::size_of::<u16>() as u16
+    }
+
+    pub fn marshal<'a>(&self, buf: &'a mut [u8]) -> &'a mut [u8] {
+        marshal_u16(buf, *self as u16)
+    }
 }
 
 impl convert::TryFrom<u16> for TpmiAlgCipherMode {

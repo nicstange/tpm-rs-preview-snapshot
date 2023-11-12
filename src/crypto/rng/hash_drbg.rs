@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2023 SUSE LLC
+// Author: Nicolai Stange <nstange@suse.de>
+
 // The Hash_DRBG construction from NIST SP 800-90Ar1.
 
 extern crate alloc;

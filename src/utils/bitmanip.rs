@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2023 SUSE LLC
+// Author: Nicolai Stange <nstange@suse.de>
+
 macro_rules! impl_bitmanip_common {
     ($t:ty, $ut:ty, $st:ty) => {
         fn trailing_bits_mask(count: u32) -> $t {

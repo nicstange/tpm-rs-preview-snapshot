@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2023 SUSE LLC
+// Author: Nicolai Stange <nstange@suse.de>
+
 extern crate alloc;
 use super::{curve, gen_random_scalar_impl, key};
 use crate::crypto::{hash, io_slices, rng};

@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2023 SUSE LLC
+// Author: Nicolai Stange <nstange@suse.de>
+
 #![no_std]
 #![cfg_attr(feature = "use_allocator_api", feature(allocator_api))]
 

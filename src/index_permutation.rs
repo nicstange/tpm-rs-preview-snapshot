@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2023 SUSE LLC
+// Author: Nicolai Stange <nstange@suse.de>
+
 /// Apply an index permutation to a slice and invert the permuation in place.
 ///
 /// # Arguments

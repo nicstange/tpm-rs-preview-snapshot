@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2023 SUSE LLC
+// Author: Nicolai Stange <nstange@suse.de>
+
 use super::{ReseedableRngCore, RngCore, RngGenerateError, RngReseedFromParentError};
 use crate::crypto::io_slices;
 
