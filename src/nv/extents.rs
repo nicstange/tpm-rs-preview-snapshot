@@ -68,7 +68,11 @@ impl PhysicalExtents {
         self.extents.remove(i);
     }
 
-    pub fn shrink_extent_by(&mut self, i: usize, allocation_blocks: layout::AllocBlockCount) -> bool {
+    pub fn shrink_extent_by(
+        &mut self,
+        i: usize,
+        allocation_blocks: layout::AllocBlockCount,
+    ) -> bool {
         let allocation_blocks = u64::from(allocation_blocks);
         debug_assert!(allocation_blocks <= self.extents[i].1);
         if allocation_blocks == self.extents[i].1 {
@@ -1131,6 +1135,12 @@ pub struct LogicalExtents {
 }
 
 impl LogicalExtents {
+    pub fn new() -> Self {
+        Self {
+            extents: vec::Vec::new(),
+        }
+    }
+
     pub fn is_empty(&self) -> bool {
         self.extents.is_empty()
     }
@@ -1141,6 +1151,21 @@ impl LogicalExtents {
 
     pub fn allocation_block_count(&self) -> layout::AllocBlockCount {
         layout::AllocBlockCount::from(self.extents.last().map(|e| e.1).unwrap_or(0))
+    }
+
+    pub fn extend_by_physical(
+        &mut self,
+        physical_extent: layout::PhysicalAllocBlockRange,
+    ) -> Result<(), interface::TpmErr> {
+        if self.extents.capacity() == self.extents.len() {
+            self.extents
+                .try_reserve_exact(1)
+                .map_err(|_| tpm_err_rc!(MEMORY))?;
+        }
+        let logical_end = self.allocation_block_count() + physical_extent.block_count();
+        self.extents
+            .push((u64::from(physical_extent.begin()), u64::from(logical_end)));
+        Ok(())
     }
 
     pub fn iter(&self) -> LogicalExtentsRangeIterator<'_> {
